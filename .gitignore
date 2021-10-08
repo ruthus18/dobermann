@@ -1,0 +1,11 @@
+__pycache__/
+.mypy_cache
+.python-version
+
+.vscode/
+.ipynb_checkpoints/
+
+.git/
+.venv/
+.cache/
+.env
