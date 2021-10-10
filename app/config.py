@@ -9,7 +9,8 @@ from pytz.tzinfo import DstTzInfo
 class Settings(BaseSettings):
     ENVIRONMENT: Literal['local', 'prod'] = 'local'
 
-    TINKOFF_TOKEN: SecretStr = SecretStr('')
+    BINANCE_KEY: SecretStr = SecretStr('')
+    BINANCE_SECRET: SecretStr = SecretStr('')
 
     DB_HOST: str = 'localhost'
     DB_PORT: int = 5432

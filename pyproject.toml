@@ -11,6 +11,7 @@ asyncpg = "^0.24.0"
 tortoise-orm = "^0.17.8"
 aerich = "^0.5.8"
 pydantic = {version = "^1.8.2", extras = ["dotenv"]}
+python-binance = "^1.0.15"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"

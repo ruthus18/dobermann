@@ -24,7 +24,7 @@ help:  ## This help dialog.
 
 lint:
 	$(BIN)flake8
-	$(BIN)isort -c . && isort .
+	$(BIN)isort -c .
 
 precommit_install:
 	echo '#!/bin/sh' >  .git/hooks/pre-commit
