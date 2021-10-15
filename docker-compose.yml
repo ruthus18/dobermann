@@ -9,3 +9,10 @@ services:
       POSTGRES_DB: 'dobermann'
       POSTGRES_USER: 'dobermann'
       POSTGRES_PASSWORD: 'dobermann'
+  redis:
+    image: bitnami/redis:6.2
+    ports:
+      - 6379:6379
+    environment:
+    #   REDIS_USERNAME: 'dobermann'
+      REDIS_PASSWORD: 'dobermann'

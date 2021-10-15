@@ -1,11 +1,13 @@
+import asyncio
 import datetime as dt
 import decimal
 import enum
 import typing as tp
 from decimal import Decimal
 
+import aioredis
 import pandas as pd
-from binance.client import AsyncClient
+from binance import AsyncClient, BinanceSocketManager
 from pydantic import BaseModel, Field, validator
 from tqdm.asyncio import tqdm_asyncio
 
@@ -83,6 +85,9 @@ class BinanceClient:
 
     def __init__(self, client: AsyncClient):
         self._client = client
+        self._ws_client = BinanceSocketManager(client)
+
+        self._ws_subscriptions: tp.Dict[str, asyncio.Task] = {}
 
     @classmethod
     async def init(cls, api_key: str = None, api_secret: str = None):
@@ -166,3 +171,28 @@ class BinanceClient:
         ]
 
         return pd.DataFrame(c.__dict__ for c in candles).sort_values('open_time')
+
+    async def subscribe_futures_candles(self, symbol: str, interval: CandleInterval, callback: tp.Awaitable):
+        trade_socket = self._ws_client.kline_futures_socket(symbol=symbol, interval=interval)
+
+        last_ts_open = None
+        async with trade_socket as sock:
+            while True:
+                res = await sock.recv()
+                if last_ts_open != res['k']['t']:
+                    await callback(res)
+
+                last_ts_open = res['k']['t']
+
+    async def sub(self):
+        import json
+
+        redis = await aioredis.from_url('redis://127.0.0.1:6379', password='dobermann')
+
+        async def callback(res: dict):
+            await redis.publish('candles', json.dumps(res['k']))
+
+        task = asyncio.create_task(self.subscribe_futures_candles('1000SHIBUSDT', '1m', callback))
+        self._ws_subscriptions[id(task)] = task
+
+        await asyncio.sleep(60)
