@@ -1,10 +1,12 @@
+import datetime as dt
 import decimal
 import enum
 import typing as tp
 from decimal import Decimal
 
+import pandas as pd
 from binance.client import AsyncClient
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, validator
 
 from .config import settings
 
@@ -37,7 +39,46 @@ class BalanceAsset(_Model):
         return self.amount_free + self.amount_locked
 
 
+class CandleInterval(str, enum.Enum):
+    M1 = '1m'
+    M3 = '3m'
+    M5 = '5m'
+    M15 = '15m'
+    M30 = '30m'
+    H1 = 'h1'
+    H2 = 'h2'
+    H4 = 'h4'
+    H6 = 'h6'
+    H8 = 'h8'
+    H12 = 'h12'
+    D1 = 'd1'
+    D3 = 'd3'
+    W1 = 'w1'
+
+
+class Candle(_Model):
+    open_time: dt.datetime
+    close_time: dt.datetime
+    open: Decimal
+    close: Decimal
+    low: Decimal
+    high: Decimal
+    volume: Decimal
+
+    @classmethod
+    @validator('open_time', 'close_time', pre=True)
+    def convert_time(cls, value: tp.Union[dt.datetime, str]):
+        if isinstance(value, str):
+            return dt.datetime.fromtimestamp(value, tz=settings.TIMEZONE)
+
+        return value
+
+
 class BinanceClient:
+    CANDLE_HEADERS = (
+        'open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time',
+        'quote_volume', 'trades', 'buy_base_volume', 'buy_quote_volume', 'ignore'
+    )
 
     def __init__(self, client: AsyncClient):
         self._client = client
@@ -102,3 +143,22 @@ class BinanceClient:
             total += Decimal(asset_price['price']) * asset.amount
 
         return round(total, 2)
+
+    async def get_futures_candles(
+        self, symbol: str, interval: CandleInterval, start: dt.datetime, end: dt.datetime
+    ) -> pd.DataFrame:
+        start_ts = str(int(start.timestamp()))
+        end_ts = str(int(end.timestamp()))
+
+        data_generator = await self._client.futures_historical_klines_generator(
+            symbol=symbol,
+            interval=interval,
+            start_str=start_ts,
+            end_str=end_ts,
+        )
+        candles: tp.Generator[Candle] = [
+            Candle(**dict(zip(self.CANDLE_HEADERS, candle_data))) async for candle_data in data_generator
+        ]
+        df = pd.DataFrame(c.__dict__ for c in candles)
+
+        return df.sort_values('open_time')
