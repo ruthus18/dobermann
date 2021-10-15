@@ -7,6 +7,7 @@ from decimal import Decimal
 import pandas as pd
 from binance.client import AsyncClient
 from pydantic import BaseModel, Field, validator
+from tqdm.asyncio import tqdm_asyncio
 
 from .config import settings
 
@@ -120,6 +121,7 @@ class BinanceClient:
 
         return margin_assets
 
+    # TODO
     async def _get_futures_balance_assets(self) -> tp.List[BalanceAsset]:
         futures_assets = await self._client.get_subaccount_futures_details()
         return futures_assets
@@ -144,21 +146,23 @@ class BinanceClient:
 
         return round(total, 2)
 
-    async def get_futures_candles(
+    async def get_futures_historical_candles(
         self, symbol: str, interval: CandleInterval, start: dt.datetime, end: dt.datetime
     ) -> pd.DataFrame:
         start_ts = str(int(start.timestamp()))
         end_ts = str(int(end.timestamp()))
 
-        data_generator = await self._client.futures_historical_klines_generator(
-            symbol=symbol,
-            interval=interval,
-            start_str=start_ts,
-            end_str=end_ts,
+        data_generator = tqdm_asyncio(
+            await self._client.futures_historical_klines_generator(
+                symbol=symbol,
+                interval=interval,
+                start_str=start_ts,
+                end_str=end_ts,
+            )
         )
         candles: tp.Generator[Candle] = [
-            Candle(**dict(zip(self.CANDLE_HEADERS, candle_data))) async for candle_data in data_generator
+            Candle(**dict(zip(self.CANDLE_HEADERS, candle_data)))
+            async for candle_data in data_generator
         ]
-        df = pd.DataFrame(c.__dict__ for c in candles)
 
-        return df.sort_values('open_time')
+        return pd.DataFrame(c.__dict__ for c in candles).sort_values('open_time')
