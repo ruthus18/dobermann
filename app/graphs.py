@@ -1,4 +1,4 @@
-from typing import Any, List, Optional  # TODO: import typing as tp
+import typing as tp
 
 import pandas as pd
 import plotly.graph_objects as go
@@ -8,8 +8,8 @@ from plotly.subplots import make_subplots
 def get_candles_graph(
     ticker: str,
     candles: pd.DataFrame,
-    extra_bottom_graph: Optional[go.Figure] = None,
-    extra_graphs: List[go.Figure] = None
+    extra_bottom_graph: tp.Optional[go.Figure] = None,
+    extra_graphs: tp.List[go.Figure] = None
 ) -> go.Figure:
     fig = make_subplots(rows=2, cols=1, row_heights=[0.8, 0.15], vertical_spacing=0.05)
 
@@ -76,9 +76,9 @@ def update_graph_hover(graph: go.Figure, show_hover: bool) -> None:
     graph.update_layout(hoverdistance=1 if show_hover else 0)
 
 
-def draw_line(graph: go.Figure, x0: Any, y0: Any, x1: Any, y1: Any, opacity: float) -> None:
+def draw_line(graph: go.Figure, x0: tp.Any, y0: tp.Any, x1: tp.Any, y1: tp.Any, opacity: float) -> None:
     graph.add_shape(type='line', x0=x0, y0=y0, x1=x1, y1=y1, line_color='#7658e0', opacity=opacity)
 
 
-def draw_vline(graph: go.Figure, x: Any, width: int = 1, opacity: float = 1) -> None:
+def draw_vline(graph: go.Figure, x: tp.Any, width: int = 1, opacity: float = 1) -> None:
     graph.add_vline(x=x, line_color='#7658e0', line_width=width, opacity=opacity)
