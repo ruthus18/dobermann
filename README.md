@@ -5,7 +5,6 @@ Tools for cryptotrading
 
 ### Local Development
 
-
 * poetry install -D
 * jupyter labextension install jupyterlab-plotly && jupyter lab build
 
