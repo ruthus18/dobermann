@@ -6,7 +6,6 @@ import typing as tp
 from decimal import Decimal
 
 import aioredis
-import pandas as pd
 from binance import AsyncClient, BinanceSocketManager
 from pydantic import BaseModel, Field, validator
 from tqdm.asyncio import tqdm_asyncio
@@ -61,20 +60,16 @@ class CandleInterval(str, enum.Enum):
 
 class Candle(_Model):
     open_time: dt.datetime
-    close_time: dt.datetime
     open: Decimal
     close: Decimal
     low: Decimal
     high: Decimal
     volume: Decimal
 
+    @validator('open_time')
     @classmethod
-    @validator('open_time', 'close_time', pre=True)
-    def convert_time(cls, value: tp.Union[dt.datetime, str]):
-        if isinstance(value, str):
-            return dt.datetime.fromtimestamp(value, tz=settings.TIMEZONE)
-
-        return value
+    def convert_tz(cls, value: tp.Union[dt.datetime, str]):
+        return value.astimezone(settings.TIMEZONE)
 
 
 class BinanceClient:
@@ -153,7 +148,8 @@ class BinanceClient:
 
     async def get_futures_historical_candles(
         self, symbol: str, interval: CandleInterval, start: dt.datetime, end: dt.datetime
-    ) -> pd.DataFrame:
+    ) -> tp.AsyncGenerator[None, Candle]:
+
         start_ts = str(int(start.timestamp()))
         end_ts = str(int(end.timestamp()))
 
@@ -165,12 +161,8 @@ class BinanceClient:
                 end_str=end_ts,
             )
         )
-        candles: tp.Generator[Candle] = [
-            Candle(**dict(zip(self.CANDLE_HEADERS, candle_data)))
-            async for candle_data in data_generator
-        ]
-
-        return pd.DataFrame(c.__dict__ for c in candles).sort_values('open_time')
+        async for candle_data in data_generator:
+            yield Candle(**dict(zip(self.CANDLE_HEADERS, candle_data)))
 
     async def subscribe_futures_candles(self, symbol: str, interval: CandleInterval, callback: tp.Awaitable):
         trade_socket = self._ws_client.kline_futures_socket(symbol=symbol, interval=interval)
@@ -179,11 +171,13 @@ class BinanceClient:
         async with trade_socket as sock:
             while True:
                 res = await sock.recv()
+                # TODO: Отдавать последнюю сформированную свечу, а не новую
                 if last_ts_open != res['k']['t']:
                     await callback(res)
 
                 last_ts_open = res['k']['t']
 
+    # TODO: DRAFT
     async def sub(self):
         import json
 

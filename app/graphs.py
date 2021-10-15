@@ -1,35 +1,45 @@
-from typing import Any, Optional
+from typing import Any, List, Optional  # TODO: import typing as tp
 
 import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
 
-def get_candles_graph(ticker: str, candles: pd.DataFrame, extra_graph: Optional[go.Figure] = None) -> go.Figure:
+def get_candles_graph(
+    ticker: str,
+    candles: pd.DataFrame,
+    extra_bottom_graph: Optional[go.Figure] = None,
+    extra_graphs: List[go.Figure] = None
+) -> go.Figure:
     fig = make_subplots(rows=2, cols=1, row_heights=[0.8, 0.15], vertical_spacing=0.05)
 
-    fig.add_trace(
-        go.Candlestick(
-            x=candles.open_time,
-            open=candles.open,
-            high=candles.high,
-            low=candles.low,
-            close=candles.close,
-            name=ticker,
-            increasing_line_color='#2d9462',
-            increasing_fillcolor='#2d9462',
-            decreasing_line_color='#f62f47',
-            decreasing_fillcolor='#f62f47',
-            line={'width': 1},
-            yhoverformat='%{y:.10f}'
-        ),
-        row=1, col=1,
+    if extra_graphs is None:
+        extra_graphs = []
+
+    candle_chart = go.Candlestick(
+        x=candles.index,
+        open=candles.open,
+        high=candles.high,
+        low=candles.low,
+        close=candles.close,
+        name=ticker,
+        increasing_line_color='#2d9462',
+        increasing_fillcolor='#2d9462',
+        decreasing_line_color='#f62f47',
+        decreasing_fillcolor='#f62f47',
+        line={'width': 1},
+        yhoverformat='%{y:.10f}'
     )
-    if extra_graph is not None:
-        second_graph = extra_graph
+    fig.add_trace(candle_chart, row=1, col=1)
+
+    for graph in extra_graphs:
+        fig.add_trace(graph, row=1, col=1)
+
+    if extra_bottom_graph is not None:
+        second_graph = extra_bottom_graph
     else:
         second_graph = go.Bar(
-            x=candles.open_time,
+            x=candles.index,
             y=candles.volume,
             marker_color='#7658e0',
             name='Volume',
