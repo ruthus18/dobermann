@@ -8,7 +8,7 @@ from plotly.subplots import make_subplots
 def get_candles_graph(
     ticker: str,
     candles: pd.DataFrame,
-    extra_bottom_graph: tp.Optional[go.Figure] = None,
+    extra_bottom_graph: tp.List[go.Figure] = None,
     extra_graphs: tp.List[go.Figure] = None
 ) -> go.Figure:
     fig = make_subplots(rows=2, cols=1, row_heights=[0.8, 0.15], vertical_spacing=0.05)
@@ -35,16 +35,17 @@ def get_candles_graph(
     for graph in extra_graphs:
         fig.add_trace(graph, row=1, col=1)
 
-    if extra_bottom_graph is not None:
-        second_graph = extra_bottom_graph
-    else:
-        second_graph = go.Bar(
+    if extra_bottom_graph is None:
+        extra_bottom_graph = [go.Bar(
             x=candles.index,
             y=candles.volume,
             marker_color='#7658e0',
             name='Volume',
-        )
-    fig.add_trace(second_graph, row=2, col=1)
+        )]
+
+    for graph in extra_bottom_graph:
+        fig.add_trace(graph, row=2, col=1)
+
     fig.update_layout(
         {'plot_bgcolor': '#ffffff', 'paper_bgcolor': '#ffffff', 'legend_orientation': "h"},
         legend=dict(y=1, x=0),
