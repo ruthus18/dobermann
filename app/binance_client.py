@@ -15,22 +15,26 @@ from .config import settings
 decimal.getcontext().rounding = decimal.ROUND_DOWN
 
 
-class _Model(BaseModel):
+class Model(BaseModel):
+
     class Config:
         orm_mode = True
         allow_mutation = False
         allow_population_by_field_name = True
 
 
-class AccountType(str, enum.Enum):
-    SPOT = 'SPOT'
-    MARGIN = 'MARGIN'
+class StrEnum(str, enum.Enum):
 
     def __str__(self) -> str:
         return self.value
 
 
-class BalanceAsset(_Model):
+class AccountType(StrEnum):
+    SPOT = 'SPOT'
+    MARGIN = 'MARGIN'
+
+
+class BalanceAsset(Model):
     symbol: str = Field(alias='asset')
     amount_free: Decimal = Field(alias='free')
     amount_locked: Decimal = Field(alias='locked')
@@ -41,7 +45,7 @@ class BalanceAsset(_Model):
         return self.amount_free + self.amount_locked
 
 
-class CandleInterval(str, enum.Enum):
+class CandleInterval(StrEnum):
     M1 = '1m'
     M3 = '3m'
     M5 = '5m'
@@ -58,7 +62,7 @@ class CandleInterval(str, enum.Enum):
     W1 = 'w1'
 
 
-class Candle(_Model):
+class Candle(Model):
     open_time: dt.datetime
     open: Decimal
     close: Decimal
@@ -70,6 +74,28 @@ class Candle(_Model):
     @classmethod
     def convert_tz(cls, value: tp.Union[dt.datetime, str]):
         return value.astimezone(settings.TIMEZONE)
+
+
+class OrderSide(StrEnum):
+    BUY = 'BUY'
+    SELL = 'SELL'
+
+
+class OrderType(StrEnum):
+    # Suitable for futures exchange
+    LIMIT = 'LIMIT'
+    MARKET = 'MARKET'
+    STOP = 'STOP'
+    STOP_MARKET = 'STOP_MARKET'
+    TAKE_PROFIT = 'TAKE_PROFIT'
+    TAKE_PROFIT_MARKET = 'TAKE_PROFIT_MARKET'
+    LIMIT_MAKER = 'LIMIT_MAKER'
+
+
+class OrderTimeInForce(StrEnum):
+    GTC = 'GTC'  # Good till cancelled
+    IOC = 'IOC'  # Immediate or cancel
+    FOK = 'FOK'  # Fill or kill
 
 
 class BinanceClient:
@@ -133,6 +159,7 @@ class BinanceClient:
 
         return spot_assets + margin_assets + futures_assets
 
+    # TODO: https://binance-docs.github.io/apidocs/futures/en/#futures-account-balance-v2-user_data
     async def get_balance_price(self) -> Decimal:
         total = Decimal(0)
 
@@ -145,6 +172,28 @@ class BinanceClient:
             total += Decimal(asset_price['price']) * asset.amount
 
         return round(total, 2)
+
+    # TODO: https://academy.binance.com/en/articles/understanding-the-different-order-types
+    async def create_futures_order(
+        self,
+        symbol: str,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Decimal,  # TODO: Cannot be sent with closePosition=true
+
+        time_in_force: OrderTimeInForce = OrderTimeInForce.GTC,
+    ):
+        """Create an order on futures exchange
+
+        Docs: https://binance-docs.github.io/apidocs/futures/en/#new-order-trade
+        """
+        await self._client.futures_create_order(  # TODO
+            symbol=symbol,
+            side=order_side,
+            type=order_type,
+            quantity=quantity,
+            timeInForce=time_in_force,
+        )
 
     async def get_futures_historical_candles(
         self, symbol: str, interval: CandleInterval, start: dt.datetime, end: dt.datetime
