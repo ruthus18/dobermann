@@ -1,3 +1,4 @@
+import datetime as dt
 import logging
 import typing as tp
 from abc import ABC, abstractmethod
@@ -19,8 +20,31 @@ def RoundedDecimal(value: tp.Any) -> Decimal:
     return round(Decimal(value), 6)
 
 
-def ema_multiplier(size: int) -> Decimal:
-    return round(Decimal(2) / Decimal(size + 1), 4)
+class EMA:
+    def __init__(self, size: int):
+        self.size = size
+
+        self.s_data = pd.Series(dtype=object)
+        self.s = pd.Series(dtype=object)
+
+        self.multiplier = self._calc_multiplier()
+
+    def _calc_multiplier(self) -> Decimal:
+        return round(Decimal(2) / Decimal(self.size + 1), 4)
+
+    def calculate(self, time: dt.datetime, value: Decimal) -> tp.Optional[Decimal]:
+        self.s_data[time] = value
+
+        if len(self.s_data) < self.size:
+            return
+
+        if len(self.s) == 0:
+            current_ema = RoundedDecimal(self.s_data.tail(self.size).mean())
+        else:
+            current_ema = (value * self.multiplier) + (self.s[-1] * (1 - self.multiplier))
+
+        self.s[time] = current_ema
+        return current_ema
 
 
 # TODO: Валидировать временной ряд на наличие разрывов (подключать для live-трейдинга как предохранитель)
@@ -63,68 +87,43 @@ class BollingerBandsIndicator(Indicator):
         return lower_band, sma, upper_band
 
 
-# TODO: Вынести подсчеты EMA в отдельную абстракцию
 class MACDIndicator(Indicator):
 
     def __init__(self, ema_long_size: int = 26, ema_short_size: int = 12, ema_signal_size: int = 9):
-        self.ema_long_size = ema_long_size
-        self.ema_short_size = ema_short_size
-        self.ema_signal_size = ema_signal_size
+        self.ema_long = EMA(ema_long_size)
+        self.ema_short = EMA(ema_short_size)
+        self.ema_signal = EMA(ema_signal_size)
 
-        self.s_price = pd.Series(dtype=object)
-
-        self.s_ema_long = pd.Series(dtype=object)
-        self.s_ema_short = pd.Series(dtype=object)
         self.s_macd = pd.Series(dtype=object)
-        self.s_ema_signal = pd.Series(dtype=object)
         self.s_macd_histogram = pd.Series(dtype=object)
 
     def calculate(self, candle: Candle) -> tp.Optional[tp.Tuple[Decimal, Decimal]]:
         open_time = candle.open_time
-        self.s_price[open_time] = candle.close
+        price = candle.close
 
-        # 1. Calc the short EMA
-        if len(self.s_price) < self.ema_short_size:
+        ema_short = self.ema_short.calculate(open_time, price)
+        ema_long = self.ema_long.calculate(open_time, price)
+
+        if ema_short is None or ema_long is None:
             return
 
-        if len(self.s_ema_short) == 0:
-            ema_short = RoundedDecimal(self.s_price.tail(self.ema_short_size).mean())
-        else:
-            _ema_mult = ema_multiplier(self.ema_short_size)
-            ema_short = (self.s_price[-1] * _ema_mult) + (self.s_ema_short[-1] * (1 - _ema_mult))
-
-        self.s_ema_short[open_time] = ema_short
-
-        # 2. Calc the long EMA
-        if len(self.s_price) < self.ema_long_size:
-            return
-
-        if len(self.s_ema_long) == 0:
-            ema_long = RoundedDecimal(self.s_price.tail(self.ema_long_size).mean())
-        else:
-            _ema_mult = ema_multiplier(self.ema_long_size)
-            ema_long = (self.s_price[-1] * _ema_mult) + (self.s_ema_long[-1] * (1 - _ema_mult))
-
-        self.s_ema_long[open_time] = ema_long
-
-        # 3. Calc the MACD
         macd = ema_short - ema_long
         self.s_macd[open_time] = macd
 
-        # 4. Calc the signal EMA
-        if len(self.s_macd) < self.ema_signal_size:
+        ema_signal = self.ema_signal.calculate(open_time, macd)
+        if ema_signal is None:
             return
 
-        if len(self.s_ema_signal) == 0:
-            ema_signal = RoundedDecimal(self.s_macd.tail(self.ema_signal_size).mean())
-        else:
-            _ema_mult = ema_multiplier(self.ema_signal_size)
-            ema_signal = (self.s_macd[-1] * _ema_mult) + (self.s_ema_signal[-1] * (1 - _ema_mult))
-
-        self.s_ema_signal[open_time] = ema_signal
-
-        # 5. Calc the MACD Histogram
         macd_histogram = macd - ema_signal
         self.s_macd_histogram[open_time] = macd_histogram
 
         return ema_signal, macd_histogram
+
+    @property
+    def s_ema_long(self) -> pd.Series: return self.ema_long.s
+
+    @property
+    def s_ema_short(self) -> pd.Series: return self.ema_short.s
+
+    @property
+    def s_ema_signal(self) -> pd.Series: return self.ema_signal.s
