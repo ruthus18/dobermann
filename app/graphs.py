@@ -83,3 +83,32 @@ def draw_line(graph: go.Figure, x0: tp.Any, y0: tp.Any, x1: tp.Any, y1: tp.Any, 
 
 def draw_vline(graph: go.Figure, x: tp.Any, width: int = 1, opacity: float = 1) -> None:
     graph.add_vline(x=x, line_color='#7658e0', line_width=width, opacity=opacity)
+
+
+def get_equity_graph(*subgraphs: tp.List[go.Scatter]):
+    eq_graph = go.Figure(subgraphs)
+    eq_graph.update_traces(mode='lines+markers')
+    eq_graph.update_layout(
+        {'plot_bgcolor': '#ffffff', 'paper_bgcolor': '#ffffff', 'legend_orientation': "h"},
+        showlegend=True,
+        yaxis_tickformat=',.0f',
+        yaxis_gridcolor='#f1f1f1',
+        xaxis_showline=True,
+        xaxis_mirror=True,
+        yaxis_showline=True,
+        yaxis_mirror=True,
+        xaxis_linecolor='#f1f1f1',
+        yaxis_linecolor='#f1f1f1',
+        xaxis_color='grey',
+        yaxis_color='grey',
+
+        # Hover Line
+        hovermode='x',
+        xaxis_showspikes=True,
+        xaxis_spikedash='dash',
+        xaxis_spikemode='across',
+        xaxis_spikesnap='cursor',
+        xaxis_spikecolor='grey',
+        xaxis_spikethickness=1,
+    )
+    return eq_graph

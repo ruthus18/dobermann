@@ -45,7 +45,7 @@ class BalanceAsset(Model):
         return self.amount_free + self.amount_locked
 
 
-class CandleInterval(StrEnum):
+class Timeframe(StrEnum):
     M1 = '1m'
     M3 = '3m'
     M5 = '5m'
@@ -196,7 +196,7 @@ class BinanceClient:
         )
 
     async def get_futures_historical_candles(
-        self, symbol: str, interval: CandleInterval, start: dt.datetime, end: dt.datetime
+        self, symbol: str, timeframe: Timeframe, start: dt.datetime, end: dt.datetime
     ) -> tp.AsyncGenerator[None, Candle]:
 
         start_ts = str(int(start.timestamp()))
@@ -205,7 +205,7 @@ class BinanceClient:
         data_generator = tqdm_asyncio(
             await self._client.futures_historical_klines_generator(
                 symbol=symbol,
-                interval=interval,
+                interval=timeframe,
                 start_str=start_ts,
                 end_str=end_ts,
             )
@@ -213,8 +213,8 @@ class BinanceClient:
         async for candle_data in data_generator:
             yield Candle(**dict(zip(self.CANDLE_HEADERS, candle_data)))
 
-    async def subscribe_futures_candles(self, symbol: str, interval: CandleInterval, callback: tp.Awaitable):
-        trade_socket = self._ws_client.kline_futures_socket(symbol=symbol, interval=interval)
+    async def subscribe_futures_candles(self, symbol: str, timeframe: Timeframe, callback: tp.Awaitable):
+        trade_socket = self._ws_client.kline_futures_socket(symbol=symbol, interval=timeframe)
 
         last_ts_open = None
         async with trade_socket as sock:
