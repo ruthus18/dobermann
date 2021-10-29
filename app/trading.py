@@ -225,11 +225,14 @@ class Position:
         }
 
 
-class Strategy(ABC):
+class Exchange:
 
-    def __init__(self):
+    def __init__(self, stop_loss_ratio: tp.Optional[Decimal] = None):
         self.positions: tp.List[Position] = []
         self.active_position: tp.Optional[Position] = None
+
+        self.stop_loss_ratio = stop_loss_ratio
+        self.stop_loss_price: tp.Optional[Decimal] = None
 
     def open_position(
         self,
@@ -246,6 +249,12 @@ class Strategy(ABC):
             enter_price=enter_price,
         )
 
+        if self.stop_loss_ratio is not None:
+            if position_type == PositionType.LONG:
+                self.stop_loss_price = enter_price * (1 - self.stop_loss_ratio)
+            else:
+                self.stop_loss_price = enter_price * (1 + self.stop_loss_ratio)
+
     def close_position(self, exit_time: dt.datetime, exit_price: Decimal):
         if self.active_position is None:
             raise RuntimeError("Position wasn't open")
@@ -256,14 +265,42 @@ class Strategy(ABC):
         self.positions.append(self.active_position)
         self.active_position = None
 
+        if self.stop_loss_price is not None:
+            self.stop_loss_price = None
+
+    def on_candle(self, candle: Candle):
+        if self.stop_loss_price is not None and candle.low <= self.stop_loss_price <= candle.high:
+            self.close_position(exit_time=candle.open_time, exit_price=self.stop_loss_price)
+
+
+class Strategy(ABC):
+
+    def __init__(self, exchange: Exchange):
+        self._exchange = exchange
+
+    @property
+    def active_position(self):
+        return self._exchange.active_position
+
+    def open_position(
+        self,
+        enter_time: dt.datetime,
+        enter_price: Decimal,
+        position_type: PositionType = PositionType.LONG,
+    ):
+        return self._exchange.open_position(enter_time, enter_price, position_type)
+
+    def close_position(self, exit_time: dt.datetime, exit_price: Decimal):
+        return self._exchange.close_position(exit_time, exit_price)
+
     @abstractmethod
     def on_candle(self, candle: Candle): ...
 
 
 class BollingerTestStrategy(Strategy):
 
-    def __init__(self):
-        super().__init__()
+    def __init__(self, exchange: Exchange):
+        super().__init__(exchange)
 
         self.ind_bollinger = BollingerBandsIndicator()
 
@@ -289,26 +326,26 @@ class BollingerTestStrategy(Strategy):
             self.close_position(time, price)
 
 
-# TODO: Stop Loss/Take Profit check with 1m candles
 # TODO: Clear strategy on second run
 class Backtester:
-
     def __init__(
         self,
         symbol: str,
         timeframe: Timeframe,
         start_at: dt.datetime,
         end_at: dt.datetime,
-        strategy: Strategy
+        strategy_cls: tp.Type[Strategy],
+        stop_loss_ratio: tp.Optional[Decimal] = None,
     ):
         self.symbol = symbol
         self.timeframe = timeframe
         self.start_at = start_at
         self.end_at = end_at
 
-        self.strategy = strategy
-        self._candles: tp.Optional[tp.List[Candle]] = None
+        self.exchange = Exchange(stop_loss_ratio)
+        self.strategy = strategy_cls(exchange=self.exchange)
 
+        self._candles: tp.Optional[tp.List[Candle]] = None
         self.equities = pd.Series(dtype=object)
         self._positions_df: tp.Optional[pd.DataFrame] = None
 
@@ -317,6 +354,7 @@ class Backtester:
 
         logger.info('Perform strategy...')
         for candle in tqdm(self._candles):
+            self.exchange.on_candle(candle)
             self.strategy.on_candle(candle)
 
         logger.info('Done!')
@@ -336,7 +374,7 @@ class Backtester:
         equity = initial_amount
         self.equities[self.start_at] = equity
 
-        for position in self.strategy.positions:
+        for position in self.exchange.positions:
             equity *= position.profit_ratio
             self.equities[position.exit_time] = round(equity, 1)
 
@@ -352,7 +390,7 @@ class Backtester:
     @property
     def summary(self):
         if self._positions_df is None:
-            self._positions_df = pd.DataFrame.from_dict(p.as_dict() for p in self.strategy.positions)
+            self._positions_df = pd.DataFrame.from_dict(p.as_dict() for p in self.exchange.positions)
 
         df = self._positions_df
         return {
