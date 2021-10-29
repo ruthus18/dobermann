@@ -6,6 +6,7 @@ import typing as tp
 from abc import ABC, abstractmethod
 from decimal import Decimal
 from functools import cached_property
+from statistics import geometric_mean
 
 import numpy as np
 import pandas as pd
@@ -309,6 +310,7 @@ class Backtester:
         self._candles: tp.Optional[tp.List[Candle]] = None
 
         self.equities = pd.Series(dtype=object)
+        self._positions_df: tp.Optional[pd.DataFrame] = None
 
     async def run(self):
         await self._fetch_candles()
@@ -349,6 +351,18 @@ class Backtester:
 
     @property
     def summary(self):
+        if self._positions_df is None:
+            self._positions_df = pd.DataFrame.from_dict(p.as_dict() for p in self.strategy.positions)
+
+        df = self._positions_df
         return {
-            'max_dropdown': min(pos.profit_ratio for pos in self.strategy.positions)
+            'mean_profit_ratio': RoundedDecimal(df.profit_ratio.mean()),
+            'gmean_profit_ratio': RoundedDecimal(geometric_mean(df.profit_ratio)),
+            'max_dropdown': df.profit_ratio.min(),
+            'total_trades': int(df.profit_ratio.count()),
+            'success_trades': int(df.profit_ratio[df.profit_ratio > 1].count()),
+            'fail_trades': int(df.profit_ratio[df.profit_ratio <= 1].count()),
+            'success_trades_ratio': RoundedDecimal(
+                df.profit_ratio[df.profit_ratio > 1].count() / df.profit_ratio.count()
+            ),
         }
