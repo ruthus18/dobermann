@@ -1,18 +1,18 @@
+import dataclasses
 import datetime as dt
 import enum
 import logging
 import typing as tp
 from abc import ABC, abstractmethod
 from decimal import Decimal
+from functools import cached_property
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 from tqdm.asyncio import tqdm
 
-from .binance_client import BinanceClient, Candle
-from .binance_client import OrderSide as OrderType
-from .binance_client import Timeframe
+from .binance_client import BinanceClient, Candle, Timeframe
 from .graphs import get_equity_graph
 
 logger = logging.getLogger(__name__)
@@ -171,49 +171,100 @@ class MACDIndicator(Indicator):
     def s_ema_signal(self) -> pd.Series: return self.ema_signal.s
 
 
-class Strategy(ABC):
-
-    def __init__(self):
-        self.orders = pd.Series(dtype=object)
-
-    @abstractmethod
-    def on_candle(self, candle: Candle): ...
+BINANCE_F_COMISSION = Decimal(0.0004)
 
 
 class PositionType(str, enum.Enum):
     LONG = 'LONG'
     SHORT = 'SHORT'
 
+    def __str__(self):
+        return self.value
+
+
+@dataclasses.dataclass
+class Position:
+    type: PositionType
+    enter_time: dt.datetime
+    enter_price: Decimal
+    exit_time: dt.datetime = None
+    exit_price: Decimal = None
+
+    @cached_property
+    def profit(self) -> Decimal:
+        C = BINANCE_F_COMISSION
+
+        if self.type == PositionType.LONG:
+            profit = ((1 - C) * self.exit_price) - ((1 + C) * self.enter_price)
+        else:
+            profit = ((1 - C) * self.enter_price) - ((1 + C) * self.exit_price)
+
+        return RoundedDecimal(profit)
+
+    @cached_property
+    def profit_ratio(self) -> Decimal:
+        C = BINANCE_F_COMISSION
+
+        if self.type == PositionType.LONG:
+            ratio = ((1 - C) * self.exit_price) / ((1 + C) * self.enter_price)
+        else:
+            ratio = ((1 - C) * self.enter_price) / ((1 + C) * self.exit_price)
+
+        return RoundedDecimal(ratio)
+
+    def as_dict(self) -> dict:
+        return {
+            'type': self.type,
+            'enter_time': self.enter_time,
+            'enter_price': self.enter_price,
+            'exit_time': self.exit_time,
+            'exit_price': self.exit_price,
+            'profit': self.profit,
+            'profit_ratio': self.profit_ratio,
+        }
+
+
+class Strategy(ABC):
+
+    def __init__(self):
+        self.positions: tp.List[Position] = []
+        self.active_position: tp.Optional[Position] = None
+
+    def open_position(
+        self,
+        enter_time: dt.datetime,
+        enter_price: Decimal,
+        position_type: PositionType = PositionType.LONG,
+    ):
+        if self.active_position is not None:
+            raise RuntimeError('Position already opened')
+
+        self.active_position = Position(
+            type=position_type,
+            enter_time=enter_time,
+            enter_price=enter_price,
+        )
+
+    def close_position(self, exit_time: dt.datetime, exit_price: Decimal):
+        if self.active_position is None:
+            raise RuntimeError("Position wasn't open")
+
+        self.active_position.exit_time = exit_time
+        self.active_position.exit_price = exit_price
+
+        self.positions.append(self.active_position)
+        self.active_position = None
+
+    @abstractmethod
+    def on_candle(self, candle: Candle): ...
+
 
 class BollingerTestStrategy(Strategy):
 
     def __init__(self):
+        super().__init__()
+
         self.ind_bollinger = BollingerBandsIndicator()
-
-        self.orders = []
-        self.current_position: tp.Optional[PositionType] = None
-
-    def open_position(self, time: dt.datetime, price: Decimal, position_type: PositionType = PositionType.LONG):
-        if self.current_position is not None:
-            raise RuntimeError('Position already opened')
-
-        self.orders.append({
-            'time': time,
-            'price': price,
-            'order_type': OrderType.BUY if position_type == PositionType.LONG else OrderType.SELL,
-        })
-        self.current_position = position_type
-
-    def close_position(self, time: dt.datetime, price: Decimal):
-        if self.current_position is None:
-            raise RuntimeError("Position wasn't open")
-
-        self.orders.append({
-            'time': time,
-            'price': price,
-            'order_type': OrderType.SELL if self.current_position == PositionType.LONG else OrderType.BUY,
-        })
-        self.current_position = None
 
     def on_candle(self, candle: Candle):
         ind_result = self.ind_bollinger.calculate(candle)
@@ -223,21 +274,18 @@ class BollingerTestStrategy(Strategy):
         time, price = candle.open_time, candle.close
         lower_band, sma, upper_band = ind_result
 
-        if self.current_position is None:
+        if self.active_position is None:
             if price < lower_band:
                 self.open_position(time, price, PositionType.LONG)
 
             elif price > upper_band:
                 self.open_position(time, price, PositionType.SHORT)
 
-        elif self.current_position == PositionType.LONG and price > sma:
+        elif self.active_position.type == PositionType.LONG and price > sma:
             self.close_position(time, price)
 
-        elif self.current_position == PositionType.SHORT and price < sma:
+        elif self.active_position.type == PositionType.SHORT and price < sma:
             self.close_position(time, price)
-
-
-BINANCE_F_COMISSION = Decimal(0.0004)
 
 
 # TODO: Stop Loss/Take Profit check with 1m candles
@@ -258,15 +306,23 @@ class Backtester:
         self.end_at = end_at
 
         self.strategy = strategy
-        self._orders = None
-        self.positions = None
-        self.equities = None
+        self._candles: tp.Optional[tp.List[Candle]] = None
 
-        self._candles: tp.Optional[tp.AsyncGenerator[None, Candle]] = None
+        self.equities = pd.Series(dtype=object)
+
+    async def run(self):
+        await self._fetch_candles()
+
+        logger.info('Perform strategy...')
+        for candle in tqdm(self._candles):
+            self.strategy.on_candle(candle)
+
+        logger.info('Done!')
 
     async def _fetch_candles(self):
         api_client = await BinanceClient.init()
 
+        logger.info('Fetching candles...')
         self._candles = [
             candle async for candle in api_client.get_futures_historical_candles(
                 symbol=self.symbol, timeframe=self.timeframe, start=self.start_at, end=self.end_at
@@ -274,50 +330,17 @@ class Backtester:
         ]
         await api_client.close()
 
-    async def run(self):
-        await self._fetch_candles()
-
-        for candle in tqdm(self._candles):
-            self.strategy.on_candle(candle)
-
-        self._calculate_positions()
-
-    # TODO: Comissions
-    def _calculate_positions(self):
-        self.positions = []
-
-        for i in range(0, len(self.strategy.orders) // 2 * 2, 2):
-            enter_order = self.strategy.orders[i]
-            exit_order = self.strategy.orders[i+1]
-
-            position = {
-                'enter_time': enter_order['time'],
-                'exit_time': exit_order['time'],
-                'enter_price': enter_order['price'],
-                'exit_price': exit_order['price'],
-            }
-
-            if enter_order['order_type'] == OrderType.BUY:
-                position['profit'] = exit_order['price'] - enter_order['price']
-                position['profit_ratio'] = RoundedDecimal(exit_order['price'] / enter_order['price'])
-            else:
-                position['profit'] = enter_order['price'] - exit_order['price']
-                position['profit_ratio'] = RoundedDecimal(enter_order['price'] / exit_order['price'])
-
-            self.positions.append(position)
-
     def _calculate_equity(self, initial_amount: Decimal):
         equity = initial_amount
         self.equities[self.start_at] = equity
 
-        for position in self.positions:
-            equity *= position['profit_ratio']
-            self.equities[position['exit_time']] = round(equity, 1)
+        for position in self.strategy.positions:
+            equity *= position.profit_ratio
+            self.equities[position.exit_time] = round(equity, 1)
 
     @property
     def equity_graph(self, initial_amount: Decimal = Decimal(10000)) -> go.Figure:
-        if self.equities is None:
-            self.equities = pd.Series(dtype=object)
+        if len(self.equities) == 0:
             self._calculate_equity(initial_amount)
 
         return get_equity_graph(
@@ -327,5 +350,5 @@ class Backtester:
     @property
     def summary(self):
         return {
-            'max_dropdown': min(pos['profit_ratio'] for pos in self.positions)
+            'max_dropdown': min(pos.profit_ratio for pos in self.strategy.positions)
         }

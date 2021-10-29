@@ -87,7 +87,7 @@ def draw_vline(graph: go.Figure, x: tp.Any, width: int = 1, opacity: float = 1) 
 
 def get_equity_graph(*subgraphs: tp.List[go.Scatter]):
     eq_graph = go.Figure(subgraphs)
-    eq_graph.update_traces(mode='lines+markers')
+    # eq_graph.update_traces(mode='lines+markers')
     eq_graph.update_layout(
         {'plot_bgcolor': '#ffffff', 'paper_bgcolor': '#ffffff', 'legend_orientation': "h"},
         showlegend=True,
