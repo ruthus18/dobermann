@@ -311,6 +311,26 @@ numpy = ["numpy (>=1.13.0)", "numpy (>=1.15.0)", "numpy (>=1.18.0)", "numpy (>=1
 tests = ["check-manifest (>=0.42)", "mock (>=1.3.0)", "pytest-cov (>=2.10.1)", "pytest-isort (>=1.2.0)", "sphinx (>=3)", "tox (>=3.7.0)", "pytest (==5.4.3)", "pytest-pycodestyle (>=2)", "pytest-pydocstyle (>=2)", "pytest (>=6)", "pytest-pycodestyle (>=2.2.0)", "pytest-pydocstyle (>=2.2.0)"]
 
 [[package]]
+name = "dramatiq"
+version = "1.12.0"
+description = "Background Processing for Python 3."
+category = "main"
+optional = false
+python-versions = ">=3.5"
+
+[package.dependencies]
+prometheus-client = ">=0.2"
+
+[package.extras]
+all = ["pylibmc (>=1.5,<2.0)", "pika (>=1.0,<2.0)", "watchdog", "watchdog-gevent", "gevent (>=1.1)", "redis (>=2.0,<4.0)"]
+dev = ["pylibmc (>=1.5,<2.0)", "pika (>=1.0,<2.0)", "watchdog", "watchdog-gevent", "gevent (>=1.1)", "redis (>=2.0,<4.0)", "alabaster", "sphinx (<1.8)", "sphinxcontrib-napoleon", "flake8", "flake8-bugbear", "flake8-quotes", "isort", "bumpversion", "hiredis", "twine", "wheel", "pytest", "pytest-benchmark", "pytest-cov", "tox"]
+gevent = ["gevent (>=1.1)"]
+memcached = ["pylibmc (>=1.5,<2.0)"]
+rabbitmq = ["pika (>=1.0,<2.0)"]
+redis = ["redis (>=2.0,<4.0)"]
+watch = ["watchdog", "watchdog-gevent"]
+
+[[package]]
 name = "entrypoints"
 version = "0.3"
 description = "Discover and load entry points from installed packages."
@@ -891,7 +911,7 @@ testing = ["pytest", "pytest-benchmark"]
 name = "prometheus-client"
 version = "0.12.0"
 description = "Python client for the Prometheus monitoring system."
-category = "dev"
+category = "main"
 optional = false
 python-versions = ">=2.7, !=3.0.*, !=3.1.*, !=3.2.*, !=3.3.*"
 
@@ -1374,7 +1394,7 @@ multidict = ">=4.0"
 [metadata]
 lock-version = "1.1"
 python-versions = "^3.9"
-content-hash = "62cf1c5e92f45892b8108ac6800af5b7f7c9600452b49614aba2b67bd56e3d12"
+content-hash = "a2dad17332203d02244ded53673d3a96369a89638acc0a26ca3fda151c1d144c"
 
 [metadata.files]
 aerich = [
@@ -1637,6 +1657,10 @@ defusedxml = [
 dictdiffer = [
     {file = "dictdiffer-0.9.0-py2.py3-none-any.whl", hash = "sha256:442bfc693cfcadaf46674575d2eba1c53b42f5e404218ca2c2ff549f2df56595"},
     {file = "dictdiffer-0.9.0.tar.gz", hash = "sha256:17bacf5fbfe613ccf1b6d512bd766e6b21fb798822a133aa86098b8ac9997578"},
+]
+dramatiq = [
+    {file = "dramatiq-1.12.0-py3-none-any.whl", hash = "sha256:f9e4419279ceae2c4f864fea5b66c2d8660ab6f2c2ad0e751a6541bad85c81be"},
+    {file = "dramatiq-1.12.0.tar.gz", hash = "sha256:2d3d49c720096dc9bd4d7bfb347ce3b5bf72d1b47e94c3f998ae6cf4235bfae7"},
 ]
 entrypoints = [
     {file = "entrypoints-0.3-py2.py3-none-any.whl", hash = "sha256:589f874b313739ad35be6e0cd7efde2a4e9b6fea91edcc34e58ecbb8dbe56d19"},

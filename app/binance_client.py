@@ -2,15 +2,18 @@ import asyncio
 import datetime as dt
 import decimal
 import enum
+import logging
 import typing as tp
 from decimal import Decimal
 
-import aioredis
 from binance import AsyncClient, BinanceSocketManager
 from pydantic import BaseModel, Field, validator
 from tqdm.asyncio import tqdm_asyncio
 
 from .config import settings
+
+logger = logging.getLogger(__name__)
+
 
 decimal.getcontext().rounding = decimal.ROUND_DOWN
 
@@ -99,27 +102,52 @@ class OrderTimeInForce(StrEnum):
 
 
 class BinanceClient:
+    """Binance client wrapper
+
+    Usage:
+        1.Directly open and close:
+
+    >>> client = await BinanceClient.init(api_key, api_secret)
+    >>> await client.close()
+
+        2. Through async context manager:
+
+    >>> async with BinanceClient(api_key, api_secret) as client:
+    >>>     ...
+    """
+
     CANDLE_HEADERS = (
         'open_time', 'open', 'high', 'low', 'close', 'volume', 'close_time',
         'quote_volume', 'trades', 'buy_base_volume', 'buy_quote_volume', 'ignore'
     )
 
-    def __init__(self, client: AsyncClient):
-        self._client = client
-        self._ws_client = BinanceSocketManager(client)
+    def __init__(self, api_key: tp.Optional[str] = None, api_secret: tp.Optional[str] = None):
+        self.__api_key = api_key or settings.BINANCE_KEY.get_secret_value()
+        self.__api_secret = api_secret or settings.BINANCE_SECRET.get_secret_value()
+
+        self._client: tp.Optional[AsyncClient] = None
+        self._ws_client: tp.Optional[BinanceSocketManager] = None
 
         self._ws_subscriptions: tp.Dict[str, asyncio.Task] = {}
 
-    @classmethod
-    async def init(cls, api_key: str = None, api_secret: str = None):
-        api_key = api_key or settings.BINANCE_KEY.get_secret_value()
-        api_secret = api_secret or settings.BINANCE_SECRET.get_secret_value()
+    async def _connect(self):
+        self._client = await AsyncClient.create(self.__api_key, self.__api_secret)
+        self._ws_client = BinanceSocketManager(self._client)
 
-        client = await AsyncClient.create(api_key, api_secret)
-        return cls(client)
+    @classmethod
+    async def init(cls, api_key: tp.Optional[str] = None, api_secret: tp.Optional[str] = None):
+        self = cls(api_key, api_secret)
+        await self._connect()
+
+    async def __aenter__(self):
+        await self._connect()
+        return self
 
     async def close(self):
         await self._client.close_connection()
+
+    async def __aexit__(self):
+        await self.close()
 
     async def _get_spot_balance_assets(self) -> tp.List[BalanceAsset]:
         spot_account_data = await self._client.get_account()
@@ -213,29 +241,58 @@ class BinanceClient:
         async for candle_data in data_generator:
             yield Candle(**dict(zip(self.CANDLE_HEADERS, candle_data)))
 
-    async def subscribe_futures_candles(self, symbol: str, timeframe: Timeframe, callback: tp.Awaitable):
-        trade_socket = self._ws_client.kline_futures_socket(symbol=symbol, interval=timeframe)
+    async def subscribe_market_mark_price(self, callback: tp.Optional[tp.Awaitable] = None, rate_limit: int = 60):
+        """Get latest prices for all futures assets on the market
 
-        last_ts_open = None
-        async with trade_socket as sock:
+        Docs: https://binance-docs.github.io/apidocs/futures/en/#mark-price-stream-for-all-market
+        """
+        if callback is None:
+            async def __callback(prices: dict):
+                logger.info('Prices received, total assets: %s', len(prices))
+
+            callback = __callback
+
+        price_socket = self._ws_client.all_mark_price_socket(fast=False)
+        timer: tp.Optional[float] = None
+
+        async with price_socket as sock:
+            logger.info('Start listening mark prices...')
+
             while True:
-                res = await sock.recv()
-                # TODO: Отдавать последнюю сформированную свечу, а не новую
-                if last_ts_open != res['k']['t']:
-                    await callback(res)
+                message = await sock.recv()
 
-                last_ts_open = res['k']['t']
+                current_ts = dt.datetime.fromtimestamp(message['data'][0]['E'] / 1000).replace(microsecond=0)
 
-    # TODO: DRAFT
-    async def sub(self):
-        import json
+                if timer is None or (current_ts - timer).seconds >= rate_limit:
+                    await callback(message['data'])
+                    timer = current_ts
 
-        redis = await aioredis.from_url('redis://127.0.0.1:6379', password='dobermann')
+    # DRAFT
+    # -----------------------------------------------------------------------------------------------------
+    # async def subscribe_futures_candles(self, symbol: str, timeframe: Timeframe, callback: tp.Awaitable):
+    #     trade_socket = self._ws_client.kline_futures_socket(symbol=symbol, interval=timeframe)
 
-        async def callback(res: dict):
-            await redis.publish('candles', json.dumps(res['k']))
+    #     last_ts_open = None
+    #     async with trade_socket as sock:
+    #         while True:
+    #             res = await sock.recv()
+    #             # TODO: Отдавать последнюю сформированную свечу, а не новую
+    #             if last_ts_open != res['k']['t']:
+    #                 await callback(res)
 
-        task = asyncio.create_task(self.subscribe_futures_candles('1000SHIBUSDT', '1m', callback))
-        self._ws_subscriptions[id(task)] = task
+    #             last_ts_open = res['k']['t']
 
-        await asyncio.sleep(60)
+    # DRAFT
+    # ----------------------------------------------------------------------------------------------
+    # async def sub(self):
+    #     import json
+
+    #     redis = await aioredis.from_url('redis://127.0.0.1:6379', password='dobermann')
+
+    #     async def callback(res: dict):
+    #         await redis.publish('candles', json.dumps(res['k']))
+
+    #     task = asyncio.create_task(self.subscribe_futures_candles('1000SHIBUSDT', '1m', callback))
+    #     self._ws_subscriptions[id(task)] = task
+
+    #     await asyncio.sleep(60)
