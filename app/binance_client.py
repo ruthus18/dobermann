@@ -146,7 +146,7 @@ class BinanceClient:
     async def close(self):
         await self._client.close_connection()
 
-    async def __aexit__(self):
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
     async def _get_spot_balance_assets(self) -> tp.List[BalanceAsset]:

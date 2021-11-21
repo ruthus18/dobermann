@@ -41,6 +41,7 @@ class Settings(BaseSettings):
                         'password': values['DB_PASSWORD'],
                         'database': values['DB_NAME'],
                     },
+                    'maxsize': 10,
                 },
             },
             'apps': {

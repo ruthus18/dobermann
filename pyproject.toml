@@ -19,6 +19,8 @@ tqdm = "^4.62.3"
 aioredis = "^2.0.0"
 simplejson = "^3.17.5"
 dramatiq = "^1.12.0"
+redis = "^4.0.1"
+hiredis = "^2.0.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"
@@ -26,7 +28,12 @@ flake8 = "^3.9.2"
 isort = "^5.9.3"
 jupyterlab = "^3.1.18"
 ipdb = "^0.13.9"
+poethepoet = "^0.11.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+
+# [tool.poe.tasks]
+# api = "python -m app api"
