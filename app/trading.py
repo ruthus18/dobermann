@@ -19,6 +19,9 @@ from .graphs import get_equity_graph
 logger = logging.getLogger(__name__)
 
 
+OptDecimal = tp.Optional[Decimal]
+
+
 def to_candles_df(candles_list: tp.List[Candle]) -> pd.DataFrame:
     return pd.DataFrame(c.dict() for c in candles_list).sort_values('open_time').set_index('open_time')
 
@@ -74,12 +77,12 @@ class BollingerBandsIndicator(Indicator):
         self.s_lower_band = pd.Series(dtype=object)
         self.s_upper_band = pd.Series(dtype=object)
 
-    def calculate(self, candle: Candle) -> tp.Optional[tp.Tuple[Decimal, Decimal, Decimal]]:
+    def calculate(self, candle: Candle) -> tp.Tuple[OptDecimal, OptDecimal, OptDecimal]:
         open_time = candle.open_time
         self.s_price[open_time] = candle.close
 
         if len(self.s_price) < self.sma_window:
-            return
+            return None, None, None
 
         sma = RoundedDecimal(self.s_price.tail(self.sma_window).mean())
         stdev = RoundedDecimal(self.s_price.tail(self.sma_window).astype(np.float64).std())
@@ -107,13 +110,13 @@ class BollingerBandsEMAIndicator(Indicator):
         self.s_lower_band = pd.Series(dtype=object)
         self.s_upper_band = pd.Series(dtype=object)
 
-    def calculate(self, candle: Candle) -> tp.Optional[tp.Tuple[Decimal, Decimal, Decimal]]:
+    def calculate(self, candle: Candle) -> tp.Tuple[OptDecimal, OptDecimal, OptDecimal]:
         open_time = candle.open_time
         self.s_price[open_time] = candle.close
 
         ema = self.ema.calculate(open_time, candle.close)
         if ema is None:
-            return
+            return None, None, None
 
         stdev = RoundedDecimal(self.s_price.tail(self.ema_window).astype(np.float64).std())
         lower_band = ema - (stdev * self.stdev_size)
@@ -140,7 +143,7 @@ class MACDIndicator(Indicator):
         self.s_macd = pd.Series(dtype=object)
         self.s_macd_histogram = pd.Series(dtype=object)
 
-    def calculate(self, candle: Candle) -> tp.Optional[tp.Tuple[Decimal, Decimal]]:
+    def calculate(self, candle: Candle) -> tp.Tuple[OptDecimal, OptDecimal]:
         open_time = candle.open_time
         price = candle.close
 
@@ -148,14 +151,14 @@ class MACDIndicator(Indicator):
         ema_long = self.ema_long.calculate(open_time, price)
 
         if ema_short is None or ema_long is None:
-            return
+            return None, None
 
         macd = ema_short - ema_long
         self.s_macd[open_time] = macd
 
         ema_signal = self.ema_signal.calculate(open_time, macd)
         if ema_signal is None:
-            return
+            return None, None
 
         macd_histogram = macd - ema_signal
         self.s_macd_histogram[open_time] = macd_histogram
