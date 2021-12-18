@@ -19,7 +19,7 @@ dramatiq.set_broker(redis_broker)
 
 
 # s - ticker, E - current time, p - current price
-async def on_message(prices: dict):
+async def on_new_prices(prices: dict):
     dramatiq.group([
         process_current_price.message(
             ticker=item['s'],
@@ -36,4 +36,12 @@ def process_current_price(ticker: str, timestamp: int, price: float):
 
 async def run():
     async with BinanceClient() as client:
-        await client.subscribe_market_mark_price(callback=on_message, rate_limit=60)
+        await client.subscribe_market_mark_price(callback=on_new_prices, rate_limit=60)
+
+
+async def backtest():
+    async with BinanceClient() as client:
+        historic_candles = await client.get_futures_historical_candles(...)
+
+    for prices in historic_candles:
+        await on_new_prices(prices)

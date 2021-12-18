@@ -226,7 +226,10 @@ class BinanceClient:
     async def get_futures_historical_candles(
         self, symbol: str, timeframe: Timeframe, start: dt.datetime, end: dt.datetime
     ) -> tp.AsyncGenerator[None, Candle]:
+        """Get historical klines for a futures
 
+        Docs: https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
+        """
         start_ts = str(int(start.timestamp()))
         end_ts = str(int(end.timestamp()))
 

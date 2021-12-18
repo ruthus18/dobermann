@@ -4,6 +4,7 @@ __pycache__/
 
 .vscode/
 .ipynb_checkpoints/
+.idea/
 
 .git/
 .venv/
