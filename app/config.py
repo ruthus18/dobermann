@@ -1,4 +1,5 @@
 import logging
+from decimal import Decimal
 from typing import Any, Dict, Literal, Optional
 
 import pytz
@@ -11,6 +12,9 @@ class Settings(BaseSettings):
 
     BINANCE_KEY: SecretStr = SecretStr('')
     BINANCE_SECRET: SecretStr = SecretStr('')
+
+    # Комиссия Binance Futures за одну операцию (от суммы сделки)
+    BINANCE_COMISSION: Decimal = Decimal(0.0004)
 
     DB_HOST: str = 'localhost'
     DB_PORT: int = 5432

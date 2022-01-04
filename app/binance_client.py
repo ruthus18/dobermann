@@ -105,15 +105,15 @@ class BinanceClient:
     """Binance client wrapper
 
     Usage:
-        1.Directly open and close:
+        A. Directly open and close:
+            >>> client = BinanceClient(api_key, api_secret)
+            >>> await client.connect()
+            >>> ...
+            >>> await client.close()
 
-    >>> client = await BinanceClient.init(api_key, api_secret)
-    >>> await client.close()
-
-        2. Through async context manager:
-
-    >>> async with BinanceClient(api_key, api_secret) as client:
-    >>>     ...
+        B. Through async context manager:
+            >>> async with BinanceClient(api_key, api_secret) as client:
+            >>>     ...
     """
 
     CANDLE_HEADERS = (
@@ -130,17 +130,12 @@ class BinanceClient:
 
         self._ws_subscriptions: tp.Dict[str, asyncio.Task] = {}
 
-    async def _connect(self):
+    async def connect(self):
         self._client = await AsyncClient.create(self.__api_key, self.__api_secret)
         self._ws_client = BinanceSocketManager(self._client)
 
-    @classmethod
-    async def init(cls, api_key: tp.Optional[str] = None, api_secret: tp.Optional[str] = None):
-        self = cls(api_key, api_secret)
-        await self._connect()
-
     async def __aenter__(self):
-        await self._connect()
+        await self.connect()
         return self
 
     async def close(self):
@@ -201,27 +196,29 @@ class BinanceClient:
 
         return round(total, 2)
 
+    # <DRAFT>
     # TODO: https://academy.binance.com/en/articles/understanding-the-different-order-types
-    async def create_futures_order(
-        self,
-        symbol: str,
-        order_side: OrderSide,
-        order_type: OrderType,
-        quantity: Decimal,  # TODO: Cannot be sent with closePosition=true
+    # async def create_futures_order(
+    #     self,
+    #     symbol: str,
+    #     order_side: OrderSide,
+    #     order_type: OrderType,
+    #     quantity: Decimal,  # TODO: Cannot be sent with closePosition=true
 
-        time_in_force: OrderTimeInForce = OrderTimeInForce.GTC,
-    ):
-        """Create an order on futures exchange
+    #     time_in_force: OrderTimeInForce = OrderTimeInForce.GTC,
+    # ):
+    #     """Create an order on futures exchange
 
-        Docs: https://binance-docs.github.io/apidocs/futures/en/#new-order-trade
-        """
-        await self._client.futures_create_order(  # TODO
-            symbol=symbol,
-            side=order_side,
-            type=order_type,
-            quantity=quantity,
-            timeInForce=time_in_force,
-        )
+    #     Docs: https://binance-docs.github.io/apidocs/futures/en/#new-order-trade
+    #     """
+    #     await self._client.futures_create_order(  # TODO
+    #         symbol=symbol,
+    #         side=order_side,
+    #         type=order_type,
+    #         quantity=quantity,
+    #         timeInForce=time_in_force,
+    #     )
+    # </DRAFT>
 
     async def get_futures_historical_candles(
         self, symbol: str, timeframe: Timeframe, start: dt.datetime, end: dt.datetime
@@ -244,10 +241,17 @@ class BinanceClient:
         async for candle_data in data_generator:
             yield Candle(**dict(zip(self.CANDLE_HEADERS, candle_data)))
 
-    async def subscribe_market_mark_price(self, callback: tp.Optional[tp.Awaitable] = None, rate_limit: int = 60):
+    async def subscribe_market_mark_price(
+        self,
+        callback: tp.Optional[tp.Awaitable] = None,
+        rate_limit: tp.Optional[int] = None
+    ):
         """Get latest prices for all futures assets on the market
 
         Docs: https://binance-docs.github.io/apidocs/futures/en/#mark-price-stream-for-all-market
+
+        By default, socket receives new data every 2-3 seconds. `rate_limit` param is using to limit frequency
+        of new data. For example, `rate_limit` = 60 means that callback will be reached every 60 seconds.
         """
         if callback is None:
             async def __callback(prices: dict):
@@ -264,14 +268,17 @@ class BinanceClient:
             while True:
                 message = await sock.recv()
 
-                current_ts = dt.datetime.fromtimestamp(message['data'][0]['E'] / 1000).replace(microsecond=0)
+                if rate_limit and rate_limit > 0:
+                    current_ts = dt.datetime.fromtimestamp(message['data'][0]['E'] / 1000).replace(microsecond=0)
 
-                if timer is None or (current_ts - timer).seconds >= rate_limit:
-                    await callback(message['data'])
+                    if timer is not None and (current_ts - timer).seconds < rate_limit:
+                        continue
+
                     timer = current_ts
 
-    # DRAFT
-    # -----------------------------------------------------------------------------------------------------
+                await callback(message['data'])
+
+    # <DRAFT>
     # async def subscribe_futures_candles(self, symbol: str, timeframe: Timeframe, callback: tp.Awaitable):
     #     trade_socket = self._ws_client.kline_futures_socket(symbol=symbol, interval=timeframe)
 
@@ -285,8 +292,6 @@ class BinanceClient:
 
     #             last_ts_open = res['k']['t']
 
-    # DRAFT
-    # ----------------------------------------------------------------------------------------------
     # async def sub(self):
     #     import json
 
@@ -299,3 +304,5 @@ class BinanceClient:
     #     self._ws_subscriptions[id(task)] = task
 
     #     await asyncio.sleep(60)
+
+    # </DRAFT>

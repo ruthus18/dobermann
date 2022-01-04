@@ -175,9 +175,6 @@ class MACDIndicator(Indicator):
     def s_ema_signal(self) -> pd.Series: return self.ema_signal.s
 
 
-BINANCE_F_COMISSION = Decimal(0.0004)
-
-
 class PositionType(str, enum.Enum):
     LONG = 'LONG'
     SHORT = 'SHORT'
@@ -191,12 +188,13 @@ class Position:
     type: PositionType
     enter_time: dt.datetime
     enter_price: Decimal
+    comission: Decimal
     exit_time: dt.datetime = None
     exit_price: Decimal = None
 
     @cached_property
     def profit(self) -> Decimal:
-        C = BINANCE_F_COMISSION
+        C = self.comission
 
         if self.type == PositionType.LONG:
             profit = ((1 - C) * self.exit_price) - ((1 + C) * self.enter_price)
@@ -207,7 +205,7 @@ class Position:
 
     @cached_property
     def profit_ratio(self) -> Decimal:
-        C = BINANCE_F_COMISSION
+        C = self.comission
 
         if self.type == PositionType.LONG:
             ratio = ((1 - C) * self.exit_price) / ((1 + C) * self.enter_price)
@@ -229,20 +227,25 @@ class Position:
 
 
 class Exchange:
+    """Dummy exchange interface.
 
-    def __init__(self, stop_loss_ratio: tp.Optional[Decimal] = None):
+    This entity is suppose to act like real exchange (access to open/close positions, set Stop Loss/Take Profit etc.)
+    """
+    def __init__(self, comission: Decimal, stop_loss_ratio: tp.Optional[Decimal] = None):
         self.positions: tp.List[Position] = []
         self.active_position: tp.Optional[Position] = None
 
         self.stop_loss_ratio = stop_loss_ratio
         self.stop_loss_price: tp.Optional[Decimal] = None
 
+        self.comission = comission
+
     def open_position(
         self,
         enter_time: dt.datetime,
         enter_price: Decimal,
         position_type: PositionType = PositionType.LONG,
-    ):
+    ) -> None:
         if self.active_position is not None:
             raise RuntimeError('Position already opened')
 
@@ -250,6 +253,7 @@ class Exchange:
             type=position_type,
             enter_time=enter_time,
             enter_price=enter_price,
+            comission=self.comission,
         )
 
         if self.stop_loss_ratio is not None:
@@ -258,7 +262,7 @@ class Exchange:
             else:
                 self.stop_loss_price = enter_price * (1 + self.stop_loss_ratio)
 
-    def close_position(self, exit_time: dt.datetime, exit_price: Decimal):
+    def close_position(self, exit_time: dt.datetime, exit_price: Decimal) -> None:
         if self.active_position is None:
             raise RuntimeError("Position wasn't open")
 
@@ -271,39 +275,52 @@ class Exchange:
         if self.stop_loss_price is not None:
             self.stop_loss_price = None
 
-    def on_candle(self, candle: Candle):
+    def on_candle(self, candle: Candle) -> None:
         if self.stop_loss_price is not None and candle.low <= self.stop_loss_price <= candle.high:
             self.close_position(exit_time=candle.open_time, exit_price=self.stop_loss_price)
 
 
 class Strategy(ABC):
+    """Main class for describing trading strategy
 
-    def __init__(self, exchange: Exchange):
+    Class is based on exchange interface, which should be set through method `init_exchange` after class construction
+    """
+    def __init__(self):
+        self._exchange: tp.Optional[Exchange] = None
+
+    def init_exchange(self, exchange: Exchange) -> None:
         self._exchange = exchange
 
     @property
-    def active_position(self):
-        return self._exchange.active_position
+    def exchange(self) -> Exchange:
+        if self._exchange is None:
+            raise RuntimeError('You should call `init_exchange` method first!!!')
+
+        return self._exchange
+
+    @property
+    def active_position(self) -> tp.Optional[Position]:
+        return self.exchange.active_position
 
     def open_position(
         self,
         enter_time: dt.datetime,
         enter_price: Decimal,
         position_type: PositionType = PositionType.LONG,
-    ):
-        return self._exchange.open_position(enter_time, enter_price, position_type)
+    ) -> None:
+        return self.exchange.open_position(enter_time, enter_price, position_type)
 
-    def close_position(self, exit_time: dt.datetime, exit_price: Decimal):
-        return self._exchange.close_position(exit_time, exit_price)
+    def close_position(self, exit_time: dt.datetime, exit_price: Decimal) -> None:
+        return self.exchange.close_position(exit_time, exit_price)
 
     @abstractmethod
-    def on_candle(self, candle: Candle): ...
+    def on_candle(self, candle: Candle) -> None: ...
 
 
 class BollingerTestStrategy(Strategy):
 
-    def __init__(self, exchange: Exchange):
-        super().__init__(exchange)
+    def __init__(self):
+        super().__init__()
 
         self.ind_bollinger = BollingerBandsIndicator()
 
@@ -331,14 +348,18 @@ class BollingerTestStrategy(Strategy):
 
 # TODO: Clear strategy on second run
 class Backtester:
+    """Tool for perform backtesting on trading strategy.
+
+    At now, supports only single asset, single timeframe and single strategy.
+    """
     def __init__(
         self,
         symbol: str,
         timeframe: Timeframe,
         start_at: dt.datetime,
         end_at: dt.datetime,
-        strategy_cls: tp.Type[Strategy],
-        stop_loss_ratio: tp.Optional[Decimal] = None,
+        strategy: Strategy,
+        stop_loss_ratio: tp.Optional[Decimal] = None,  # max loss of single position (by default, losses is unlimited)
     ):
         self.symbol = symbol
         self.timeframe = timeframe
@@ -346,7 +367,9 @@ class Backtester:
         self.end_at = end_at
 
         self.exchange = Exchange(stop_loss_ratio)
-        self.strategy = strategy_cls(exchange=self.exchange)
+        self.strategy = strategy
+
+        self.strategy.init_exchange(self.exchange)
 
         self._candles: tp.Optional[tp.List[Candle]] = None
         self.equities = pd.Series(dtype=object)

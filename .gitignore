@@ -12,3 +12,5 @@ __pycache__/
 .env
 
 /*.ipynb
+
+research

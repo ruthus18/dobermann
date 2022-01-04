@@ -1,3 +1,20 @@
+"""
+This module is draft of real-time price tracking for futures
+
+Usage:
+    1. Start redis server
+        ~$ docker-compose up -d redis
+
+    2. Launch socket listenner for price stream
+        ~$ ipython
+
+        >>> from app import price_stream
+        >>> await price_stream.run()
+
+    3. Launch workers for processing stream data
+        ~$ dramatiq app.price_stream
+"""
+
 import datetime as dt
 import logging
 import logging.config
@@ -20,6 +37,7 @@ dramatiq.set_broker(redis_broker)
 
 # s - ticker, E - current time, p - current price
 async def on_new_prices(prices: dict):
+    logger.info(prices[0])
     dramatiq.group([
         process_current_price.message(
             ticker=item['s'],
@@ -36,7 +54,7 @@ def process_current_price(ticker: str, timestamp: int, price: float):
 
 async def run():
     async with BinanceClient() as client:
-        await client.subscribe_market_mark_price(callback=on_new_prices, rate_limit=60)
+        await client.subscribe_market_mark_price(callback=on_new_prices, rate_limit=15)
 
 
 async def backtest():
