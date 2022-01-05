@@ -186,31 +186,36 @@ class PositionType(str, enum.Enum):
 @dataclasses.dataclass
 class Position:
     type: PositionType
+
     enter_time: dt.datetime
     enter_price: Decimal
-    comission: Decimal
+    enter_comission: Decimal
+
+    exit_comission: Decimal = None
     exit_time: dt.datetime = None
     exit_price: Decimal = None
 
     @cached_property
     def profit(self) -> Decimal:
-        C = self.comission
+        C_IN = self.enter_comission
+        C_OUT = self.exit_comission
 
         if self.type == PositionType.LONG:
-            profit = ((1 - C) * self.exit_price) - ((1 + C) * self.enter_price)
+            profit = ((1 - C_OUT) * self.exit_price) - ((1 + C_IN) * self.enter_price)
         else:
-            profit = ((1 - C) * self.enter_price) - ((1 + C) * self.exit_price)
+            profit = ((1 - C_IN) * self.enter_price) - ((1 + C_OUT) * self.exit_price)
 
         return RoundedDecimal(profit)
 
     @cached_property
     def profit_ratio(self) -> Decimal:
-        C = self.comission
+        C_IN = self.enter_comission
+        C_OUT = self.exit_comission
 
         if self.type == PositionType.LONG:
-            ratio = ((1 - C) * self.exit_price) / ((1 + C) * self.enter_price)
+            ratio = ((1 - C_OUT) * self.exit_price) / ((1 + C_IN) * self.enter_price)
         else:
-            ratio = ((1 - C) * self.enter_price) / ((1 + C) * self.exit_price)
+            ratio = ((1 - C_IN) * self.enter_price) / ((1 + C_OUT) * self.exit_price)
 
         return RoundedDecimal(ratio)
 
@@ -231,20 +236,28 @@ class Exchange:
 
     This entity is suppose to act like real exchange (access to open/close positions, set Stop Loss/Take Profit etc.)
     """
-    def __init__(self, comission: Decimal, stop_loss_ratio: tp.Optional[Decimal] = None):
+    def __init__(
+        self,
+        limit_order_comission: Decimal,
+        market_order_comission: Decimal,
+        stop_loss_ratio: OptDecimal = None
+    ):
         self.positions: tp.List[Position] = []
         self.active_position: tp.Optional[Position] = None
 
         self.stop_loss_ratio = stop_loss_ratio
         self.stop_loss_price: tp.Optional[Decimal] = None
 
-        self.comission = comission
+        self.limit_order_comission = limit_order_comission
+        self.market_order_comission = market_order_comission
 
     def open_position(
         self,
         enter_time: dt.datetime,
         enter_price: Decimal,
         position_type: PositionType = PositionType.LONG,
+        stop_loss: OptDecimal = None,
+        take_profit: OptDecimal = None,
     ) -> None:
         if self.active_position is not None:
             raise RuntimeError('Position already opened')
@@ -255,12 +268,6 @@ class Exchange:
             enter_price=enter_price,
             comission=self.comission,
         )
-
-        if self.stop_loss_ratio is not None:
-            if position_type == PositionType.LONG:
-                self.stop_loss_price = enter_price * (1 - self.stop_loss_ratio)
-            else:
-                self.stop_loss_price = enter_price * (1 + self.stop_loss_ratio)
 
     def close_position(self, exit_time: dt.datetime, exit_price: Decimal) -> None:
         if self.active_position is None:
@@ -307,8 +314,10 @@ class Strategy(ABC):
         enter_time: dt.datetime,
         enter_price: Decimal,
         position_type: PositionType = PositionType.LONG,
+        stop_loss: OptDecimal = None,
+        take_profit: OptDecimal = None,
     ) -> None:
-        return self.exchange.open_position(enter_time, enter_price, position_type)
+        return self.exchange.open_position(enter_time, enter_price, position_type, stop_loss, take_profit)
 
     def close_position(self, exit_time: dt.datetime, exit_price: Decimal) -> None:
         return self.exchange.close_position(exit_time, exit_price)
@@ -325,12 +334,11 @@ class BollingerTestStrategy(Strategy):
         self.ind_bollinger = BollingerBandsIndicator()
 
     def on_candle(self, candle: Candle):
-        ind_result = self.ind_bollinger.calculate(candle)
-        if ind_result is None:
+        lower_band, sma, upper_band = self.ind_bollinger.calculate(candle)
+        if sma is None:
             return
 
         time, price = candle.open_time, candle.close
-        lower_band, sma, upper_band = ind_result
 
         if self.active_position is None:
             if price < lower_band:
@@ -366,7 +374,7 @@ class Backtester:
         self.start_at = start_at
         self.end_at = end_at
 
-        self.exchange = Exchange(stop_loss_ratio)
+        self.exchange = Exchange(comission=Decimal('0.0004'), stop_loss_ratio=stop_loss_ratio)
         self.strategy = strategy
 
         self.strategy.init_exchange(self.exchange)
@@ -375,26 +383,27 @@ class Backtester:
         self.equities = pd.Series(dtype=object)
         self._positions_df: tp.Optional[pd.DataFrame] = None
 
+    async def _fetch_data(self):
+        async with BinanceClient() as api_client:
+
+            logger.info('Fetching candles data...')
+            self._candles = [
+                candle async for candle in api_client.get_futures_historical_candles(
+                    symbol=self.symbol, timeframe=self.timeframe, start=self.start_at, end=self.end_at
+                )
+            ]
+
     async def run(self):
-        await self._fetch_candles()
+        await self._fetch_data()
 
         logger.info('Perform strategy...')
         for candle in tqdm(self._candles):
             self.exchange.on_candle(candle)
             self.strategy.on_candle(candle)
 
+        self._calculate_equity(Decimal(1000))
+
         logger.info('Done!')
-
-    async def _fetch_candles(self):
-        api_client = await BinanceClient.init()
-
-        logger.info('Fetching candles...')
-        self._candles = [
-            candle async for candle in api_client.get_futures_historical_candles(
-                symbol=self.symbol, timeframe=self.timeframe, start=self.start_at, end=self.end_at
-            )
-        ]
-        await api_client.close()
 
     def _calculate_equity(self, initial_amount: Decimal):
         equity = initial_amount
@@ -405,10 +414,7 @@ class Backtester:
             self.equities[position.exit_time] = round(equity, 1)
 
     @property
-    def equity_graph(self, initial_amount: Decimal = Decimal(10000)) -> go.Figure:
-        if len(self.equities) == 0:
-            self._calculate_equity(initial_amount)
-
+    def equity_graph(self) -> go.Figure:
         return get_equity_graph(
             go.Scatter(x=self.equities.index, y=self.equities.values, name='Equity', line=dict(color='#7658e0'))
         )
