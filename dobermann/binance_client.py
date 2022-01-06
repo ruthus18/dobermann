@@ -53,15 +53,15 @@ class Timeframe(StrEnum):
     M5 = '5m'
     M15 = '15m'
     M30 = '30m'
-    H1 = 'h1'
-    H2 = 'h2'
-    H4 = 'h4'
-    H6 = 'h6'
-    H8 = 'h8'
-    H12 = 'h12'
-    D1 = 'd1'
-    D3 = 'd3'
-    W1 = 'w1'
+    H1 = '1h'
+    H2 = '2h'
+    H4 = '4h'
+    H6 = '6h'
+    H8 = '8h'
+    H12 = '12h'
+    D1 = '1d'
+    D3 = '3d'
+    W1 = '1w'
 
 
 class Candle(Model):
@@ -231,7 +231,7 @@ class BinanceClient:
 
         data_generator = await self._client.futures_historical_klines_generator(
             symbol=symbol,
-            interval=timeframe,
+            interval=str(timeframe),
             start_str=start_ts,
             end_str=end_ts,
         )
