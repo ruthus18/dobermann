@@ -45,7 +45,7 @@ class Indicator(ABC):
     def calculate(self, candle: Candle) -> tp.Any: ...
 
 
-class BollingerBandsIndicator(Indicator):
+class BollingerBands(Indicator):
 
     def __init__(self, sma_window: int = 20, stdev_size: int = 2):
         self.sma_window = sma_window
@@ -78,7 +78,7 @@ class BollingerBandsIndicator(Indicator):
         return lower_band, sma, upper_band
 
 
-class BollingerBandsEMAIndicator(Indicator):
+class BollingerBandsEMA(Indicator):
 
     def __init__(self, ema_window: int = 20, stdev_size: int = 2):
         self.ema_window = ema_window
@@ -114,7 +114,7 @@ class BollingerBandsEMAIndicator(Indicator):
     def s_ema(self) -> pd.Series: return self.ema.s
 
 
-class MACDIndicator(Indicator):
+class MACD(Indicator):
 
     def __init__(self, ema_long_window: int = 26, ema_short_window: int = 12, ema_signal_window: int = 9):
         self.ema_long = EMA(ema_long_window)
@@ -154,3 +154,9 @@ class MACDIndicator(Indicator):
 
     @property
     def s_ema_signal(self) -> pd.Series: return self.ema_signal.s
+
+
+class StohasticOscillator(Indicator):
+
+    def __init__(self):
+        ...

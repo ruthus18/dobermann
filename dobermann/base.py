@@ -182,6 +182,9 @@ class Strategy(ABC):
 
         # TODO: Прогрев индикаторов (пока можно делать на уровне дочернего класса стратегии)
 
+    async def backtest(self, symbol: str, timeframe: Timeframe, start_at: dt.datetime, end_at: dt.datetime):
+        return await backtest(self, symbol, timeframe, start_at, end_at)
+
     @abstractmethod
     def on_candle(self, candle: Candle) -> None: ...
 

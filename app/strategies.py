@@ -1,5 +1,4 @@
-from dobermann import Candle, PositionType, Strategy
-from dobermann.indicators import BollingerBandsIndicator
+from dobermann import Candle, PositionType, Strategy, indicators
 
 
 class BollingerTestStrategy(Strategy):
@@ -7,7 +6,7 @@ class BollingerTestStrategy(Strategy):
     def __init__(self):
         super().__init__()
 
-        self.ind_bollinger = BollingerBandsIndicator()
+        self.ind_bollinger = indicators.BollingerBands()
 
     def on_candle(self, candle: Candle):
         lower_band, sma, upper_band = self.ind_bollinger.calculate(candle)
