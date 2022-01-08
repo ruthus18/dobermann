@@ -9,16 +9,16 @@ license = "MIT"
 python = "^3.9"
 asyncpg = "^0.24.0"
 tortoise-orm = "^0.17.8"
-aerich = "^0.5.8"
+aerich = "^0.6.1"
 pydantic = {version = "^1.8.2", extras = ["dotenv"]}
 python-binance = "^1.0.15"
-plotly = "^5.3.1"
-numpy = {version = "^1.21.2", python = ">=3.9,<3.11"}
-pandas = "^1.3.3"
+plotly = "^5.5.0"
+numpy = {version = "^1.22.0", python = ">=3.9,<3.11"}
+pandas = "^1.3.5"
 tqdm = "^4.62.3"
 aioredis = "^2.0.0"
 simplejson = "^3.17.5"
-dramatiq = "^1.12.0"
+dramatiq = "^1.12.1"
 redis = "^4.0.1"
 hiredis = "^2.0.0"
 
@@ -26,14 +26,24 @@ hiredis = "^2.0.0"
 pytest = "^6.2.5"
 flake8 = "^3.9.2"
 isort = "^5.9.3"
-jupyterlab = "^3.1.18"
+jupyterlab = "^3.2.6"
 ipdb = "^0.13.9"
 poethepoet = "^0.11.0"
+
+[tool.aerich]
+tortoise_orm = "app.config.TORTOISE_ORM"
+location = "app/migrations"
+src_folder = "./."
+
+[tool.poe.tasks]
+makemigrations = "aerich upgrade"
+migrate = "aerich migrate"
+lab = "jupyter lab"
+
+_flake8 = 'flake8 --statistics --show-source .'
+_isort = 'isort -c .'
+lint = ['_flake8', '_isort']
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
-
-
-# [tool.poe.tasks]
-# api = "python -m app api"

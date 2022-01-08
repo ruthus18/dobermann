@@ -9,6 +9,9 @@ services:
       POSTGRES_DB: 'dobermann'
       POSTGRES_USER: 'dobermann'
       POSTGRES_PASSWORD: 'dobermann'
+    volumes:
+      - /Volumes/Finance/postgres-data:/var/lib/postgresql/data
+
   redis:
     image: bitnami/redis:6.2
     ports:
