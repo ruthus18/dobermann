@@ -28,7 +28,6 @@ class Settings(BaseSettings):
     TIMEZONE: Optional[DstTzInfo] = None
 
     LOGGING_LEVEL: Literal['DEBUG', 'INFO', 'ERROR'] = Field('INFO')
-    LOGGING_FORMAT: str = '[%(asctime)s] %(levelname)s %(name)s: %(message)s'
     LOGGING: Dict[str, Any] = {}
 
     @root_validator
@@ -61,7 +60,8 @@ class Settings(BaseSettings):
             'disable_existing_loggers': False,
             'formatters': {
                 'default': {
-                    'format': values['LOGGING_FORMAT'],
+                    'class': 'colorlog.ColoredFormatter',
+                    'format': '%(log_color)s%(levelname)-8s%(asctime)s%(yellow)s %(name)s: ' '%(blue)s%(message)s %(reset)s',  # noqa
                 },
             },
             'handlers': {
@@ -77,6 +77,9 @@ class Settings(BaseSettings):
                     'level': values['LOGGING_LEVEL'],
                 },
                 'tortoise': {
+                    'level': logging.ERROR,
+                },
+                'apscheduler.executors': {
                     'level': logging.ERROR,
                 },
             },

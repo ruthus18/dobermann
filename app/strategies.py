@@ -27,3 +27,9 @@ class BollingerTestStrategy(Strategy):
 
         elif self.exchange.active_position.type == PositionType.SHORT and price < sma:
             self.exchange.close_market_position()
+
+
+class FractalEMAStrategy(Strategy):
+
+    def __init__(self):
+        super().__init__()

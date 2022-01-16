@@ -5,4 +5,4 @@ OptDecimal = tp.Optional[Decimal]
 
 
 def RoundedDecimal(value: tp.Any) -> Decimal:
-    return round(Decimal(value), 6)
+    return round(Decimal(value), 8)

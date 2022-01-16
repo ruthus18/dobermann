@@ -7,6 +7,7 @@ import typing as tp
 from decimal import Decimal
 
 from binance import AsyncClient, BinanceSocketManager
+from binance.enums import HistoricalKlinesType
 from pydantic import BaseModel, Field, validator
 
 from app.config import settings  # FIXME
@@ -31,22 +32,6 @@ class StrEnum(str, enum.Enum):
         return self.value
 
 
-class AccountType(StrEnum):
-    SPOT = 'SPOT'
-    MARGIN = 'MARGIN'
-
-
-class BalanceAsset(Model):
-    symbol: str = Field(alias='asset')
-    amount_free: Decimal = Field(alias='free')
-    amount_locked: Decimal = Field(alias='locked')
-    account_type: AccountType
-
-    @property
-    def amount(self):
-        return self.amount_free + self.amount_locked
-
-
 class Timeframe(StrEnum):
     M1 = '1m'
     M3 = '3m'
@@ -62,6 +47,24 @@ class Timeframe(StrEnum):
     D1 = '1d'
     D3 = '3d'
     W1 = '1w'
+
+
+class Asset(Model):
+    ticker: str = Field(..., alias='symbol')
+    status: str
+    base_asset: str = Field(..., alias='baseAsset')
+    quote_asset: str = Field(..., alias='quoteAsset')
+
+    filters: tp.List[dict]
+
+
+class FuturesAsset(Asset):
+    underlying_type: str = Field(..., alias='underlyingType')
+    onboard_date: int = Field(..., alias='onboardDate')
+
+    @validator('onboard_date')
+    def convert_ts(cls, value: tp.Union[dt.datetime, str]) -> dt.datetime:
+        return dt.datetime.fromtimestamp(value / 1000).astimezone(settings.TIMEZONE)
 
 
 class Candle(Model):
@@ -143,84 +146,24 @@ class BinanceClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
-    async def _get_spot_balance_assets(self) -> tp.List[BalanceAsset]:
-        spot_account_data = await self._client.get_account()
+    async def get_spot_assets(self) -> tp.List[Asset]:
+        response = await self._client.get_exchange_info()
         return [
-            BalanceAsset(**item, account_type=AccountType.SPOT)
-            for item in spot_account_data['balances'] if float(item['free']) != 0
+            Asset(**asset) for asset in response['symbols']
+            if asset['quoteAsset'] == 'USDT'
+            and asset['status'] == 'TRADING'
         ]
 
-    async def _get_margin_balance_assets(self) -> tp.List[BalanceAsset]:
-        margin_assets = []
-        margin_account_data = await self._client.get_isolated_margin_account()
-
-        for base_item in margin_account_data['assets']:
-            for item_type in ('baseAsset', 'quoteAsset'):
-                item = base_item[item_type]
-
-                margin_assets.append(
-                    BalanceAsset(
-                        symbol=item['asset'],
-                        amount_free=Decimal(item['free']) - Decimal(item['borrowed']),
-                        amount_locked=item['locked'],
-                        account_type=AccountType.MARGIN
-                    )
-                )
-
-        return margin_assets
-
-    # TODO
-    async def _get_futures_balance_assets(self) -> tp.List[BalanceAsset]:
-        futures_assets = await self._client.get_subaccount_futures_details()
-        return futures_assets
-
-    async def get_balance_assets(self) -> tp.List[BalanceAsset]:
-        spot_assets = await self._get_spot_balance_assets()
-        margin_assets = await self._get_margin_balance_assets()
-        futures_assets = await self._get_futures_balance_assets()
-
-        return spot_assets + margin_assets + futures_assets
-
-    # TODO: https://binance-docs.github.io/apidocs/futures/en/#futures-account-balance-v2-user_data
-    async def get_balance_price(self) -> Decimal:
-        total = Decimal(0)
-
-        for asset in await self.get_balance_assets():
-            if asset.symbol == 'USDT':
-                total += asset.amount
-                continue
-
-            asset_price = await self._client.get_symbol_ticker(symbol=f'{asset.symbol}USDT')
-            total += Decimal(asset_price['price']) * asset.amount
-
-        return round(total, 2)
-
-    # <DRAFT>
-    # TODO: https://academy.binance.com/en/articles/understanding-the-different-order-types
-    # async def create_futures_order(
-    #     self,
-    #     symbol: str,
-    #     order_side: OrderSide,
-    #     order_type: OrderType,
-    #     quantity: Decimal,  # TODO: Cannot be sent with closePosition=true
-
-    #     time_in_force: OrderTimeInForce = OrderTimeInForce.GTC,
-    # ):
-    #     """Create an order on futures exchange
-
-    #     Docs: https://binance-docs.github.io/apidocs/futures/en/#new-order-trade
-    #     """
-    #     await self._client.futures_create_order(  # TODO
-    #         symbol=symbol,
-    #         side=order_side,
-    #         type=order_type,
-    #         quantity=quantity,
-    #         timeInForce=time_in_force,
-    #     )
-    # </DRAFT>
+    async def get_futures_assets(self) -> tp.List[FuturesAsset]:
+        response = await self._client.futures_exchange_info()
+        return [
+            FuturesAsset(**asset) for asset in response['symbols']
+            if asset['quoteAsset'] == 'USDT'
+            and asset['contractType'] == 'PERPETUAL'
+        ]
 
     async def get_futures_historical_candles(
-        self, symbol: str, timeframe: Timeframe, start: dt.datetime, end: dt.datetime
+        self, ticker: str, timeframe: Timeframe, start: dt.datetime, end: dt.datetime
     ) -> tp.AsyncGenerator[None, Candle]:
         """Get historical klines for a futures
 
@@ -230,7 +173,7 @@ class BinanceClient:
         end_ts = str(int(end.timestamp()))
 
         data_generator = await self._client.futures_historical_klines_generator(
-            symbol=symbol,
+            symbol=ticker,
             interval=str(timeframe),
             start_str=start_ts,
             end_str=end_ts,
@@ -238,7 +181,16 @@ class BinanceClient:
         async for candle_data in data_generator:
             yield Candle(**dict(zip(self.CANDLE_HEADERS, candle_data)))
 
-    async def subscribe_market_mark_price(
+    async def get_recent_candle(self, ticker: str, timeframe: Timeframe) -> Candle:
+        data = await self._client._klines(
+            klines_type=HistoricalKlinesType.FUTURES,
+            symbol=ticker,
+            interval=timeframe,
+            limit=1,
+        )
+        return Candle(**dict(zip(self.CANDLE_HEADERS, data[0])))
+
+    async def subscribe_futures_mark_price(
         self,
         callback: tp.Optional[tp.Awaitable] = None,
         rate_limit: tp.Optional[int] = None
@@ -256,10 +208,9 @@ class BinanceClient:
 
             callback = __callback
 
-        price_socket = self._ws_client.all_mark_price_socket(fast=False)
         timer: tp.Optional[float] = None
 
-        async with price_socket as sock:
+        async with self._ws_client.all_mark_price_socket(fast=True) as sock:
             logger.info('Start listening mark prices...')
 
             while True:
@@ -302,4 +253,25 @@ class BinanceClient:
 
     #     await asyncio.sleep(60)
 
+    # TODO: https://academy.binance.com/en/articles/understanding-the-different-order-types
+    # async def create_futures_order(
+    #     self,
+    #     symbol: str,
+    #     order_side: OrderSide,
+    #     order_type: OrderType,
+    #     quantity: Decimal,  # TODO: Cannot be sent with closePosition=true
+
+    #     time_in_force: OrderTimeInForce = OrderTimeInForce.GTC,
+    # ):
+    #     """Create an order on futures exchange
+
+    #     Docs: https://binance-docs.github.io/apidocs/futures/en/#new-order-trade
+    #     """
+    #     await self._client.futures_create_order(  # TODO
+    #         symbol=symbol,
+    #         side=order_side,
+    #         type=order_type,
+    #         quantity=quantity,
+    #         timeInForce=time_in_force,
+    #     )
     # </DRAFT>

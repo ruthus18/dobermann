@@ -1,10 +1,13 @@
 from .base import PositionType, Strategy, Timeframe, backtest
-from .binance_client import Candle
+from .binance_client import Asset, BinanceClient, Candle, FuturesAsset
 
 __all__ = [
+    'Asset',
     'backtest',
-    'Strategy',
+    'BinanceClient',
     'Candle',
+    'FuturesAsset',
     'PositionType',
+    'Strategy',
     'Timeframe',
 ]

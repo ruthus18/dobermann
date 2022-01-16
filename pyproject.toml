@@ -21,6 +21,8 @@ simplejson = "^3.17.5"
 dramatiq = "^1.12.1"
 redis = "^4.0.1"
 hiredis = "^2.0.0"
+colorlog = "^6.6.0"
+APScheduler = "^3.8.1"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"
@@ -36,9 +38,11 @@ location = "app/migrations"
 src_folder = "./."
 
 [tool.poe.tasks]
-makemigrations = "aerich upgrade"
-migrate = "aerich migrate"
+makemigrations = "aerich migrate"
+migrate = "aerich upgrade"
+
 lab = "jupyter lab"
+sync = "python -m app market_sync"
 
 _flake8 = 'flake8 --statistics --show-source .'
 _isort = 'isort -c .'

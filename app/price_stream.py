@@ -22,9 +22,10 @@ import logging.config
 import dramatiq
 from dramatiq.brokers.redis import RedisBroker
 
-from .binance_client import BinanceClient
+from dobermann import BinanceClient
+from dobermann.utils import RoundedDecimal
+
 from .config import settings
-from .trading import RoundedDecimal
 
 logger = logging.getLogger(__name__)
 
