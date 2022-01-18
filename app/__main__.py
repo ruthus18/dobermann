@@ -15,4 +15,4 @@ if __name__ == '__main__':
 
     if args.command == 'market_sync':
         from . import market_sync
-        market_sync.run()
+        market_sync.main()

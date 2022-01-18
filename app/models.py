@@ -1,5 +1,6 @@
 import datetime as dt
 import json
+import typing as tp
 from enum import Enum
 from typing import Any, Dict, Sequence
 
@@ -67,6 +68,11 @@ class Asset(models.Model):
 
     def __str__(self):
         return self.ticker
+
+    # TODO: move to queryset
+    @classmethod
+    def active(cls) -> tp.Iterable[str]:
+        return cls.filter(removed_at__isnull=True)
 
 
 class Candle(models.Model):

@@ -2,6 +2,7 @@ import asyncio
 import datetime as dt
 import functools
 import logging
+import signal
 import typing as tp
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
@@ -17,7 +18,7 @@ logger = logging.getLogger(__name__)
 scheduler = AsyncIOScheduler()
 
 
-def job(db: bool = True, loglevel: str = logging.DEBUG):
+def job(db: bool = True, loglevel: str = logging.INFO):
     def wrapper(func):
         @functools.wraps(func)
         async def wrapped(*args, **kwargs):
@@ -28,12 +29,7 @@ def job(db: bool = True, loglevel: str = logging.DEBUG):
                 job_id += f' {kwargs}'
 
             logger.log(loglevel, 'Job started: %s', job_id)
-            if db:
-                await models.init_db()
-
             res = await func(*args, **kwargs)
-            if db:
-                await models.close_db()
 
             logger.log(loglevel, 'Job finished: %s', job_id)
             return res
@@ -64,16 +60,22 @@ def add_job(
     scheduler.add_job(func=task, trigger=trigger, name=name)
 
 
-def run_scheduler():
+async def run_scheduler():
     loop = asyncio.get_event_loop()
 
+    stop_event = asyncio.Event()
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        loop.add_signal_handler(sig, stop_event.set)
+
     logger.info('Starting scheduler...')
+
+    await models.init_db()
     scheduler.start()
 
     try:
-        loop.run_forever()
-    except (KeyboardInterrupt, SystemExit):
-        logger.info('Shutting down scheduler...')
+        await stop_event.wait()
+
     finally:
-        # scheduler.shutdown(wait=False)
-        loop.close()
+        logger.info('Shutdown scheduler...')
+        scheduler.shutdown()
+        await models.close_db()

@@ -181,14 +181,14 @@ class BinanceClient:
         async for candle_data in data_generator:
             yield Candle(**dict(zip(self.CANDLE_HEADERS, candle_data)))
 
-    async def get_recent_candle(self, ticker: str, timeframe: Timeframe) -> Candle:
+    async def get_recent_candles(self, ticker: str, timeframe: Timeframe, limit: int = 2) -> Candle:
         data = await self._client._klines(
             klines_type=HistoricalKlinesType.FUTURES,
             symbol=ticker,
             interval=timeframe,
-            limit=1,
+            limit=limit,
         )
-        return Candle(**dict(zip(self.CANDLE_HEADERS, data[0])))
+        return [Candle(**dict(zip(self.CANDLE_HEADERS, c))) for c in data]
 
     async def subscribe_futures_mark_price(
         self,
