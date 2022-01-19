@@ -17,7 +17,7 @@ def get_candles_graph(
         extra_graphs = []
 
     candle_chart = go.Candlestick(
-        x=candles.index,
+        x=candles.open_time,
         open=candles.open,
         high=candles.high,
         low=candles.low,

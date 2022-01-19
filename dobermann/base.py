@@ -20,18 +20,17 @@ from .utils import OptDecimal, RoundedDecimal
 
 logger = logging.getLogger(__name__)
 
+
+# TODO: configuration
 BINANCE_FUTURES_LIMIT_COMISSION = Decimal('0.0002')
 BINANCE_FUTURES_MARKET_COMISSION = Decimal('0.0004')
 
 EQUITY_INITIAL_AMOUNT = Decimal(1000)
 
 
-class PositionType(str, enum.Enum):
+class PositionType(enum.StrEnum):
     LONG = 'LONG'
     SHORT = 'SHORT'
-
-    def __str__(self):
-        return self.value
 
 
 @dataclass
@@ -110,7 +109,7 @@ class Exchange:
         position_type: PositionType = PositionType.LONG,
         stop_loss: OptDecimal = None,
         take_profit: OptDecimal = None,
-    ):
+    ) -> None:
         if not self._current_candle:
             raise RuntimeError('Wrong state of exchange, you should call first `.on_candle()` method!')
 
@@ -126,7 +125,7 @@ class Exchange:
             take_profit=take_profit,
         )
 
-    def _close_position(self, price: Decimal):
+    def _close_position(self, price: Decimal) -> None:
         self.active_position.exit_time = self._current_candle.open_time
         self.active_position.exit_price = price
         self.active_position.exit_comission = self.market_order_comission
@@ -134,7 +133,7 @@ class Exchange:
         self.positions.append(self.active_position)
         self.active_position = None
 
-    def close_market_position(self):
+    def close_market_position(self) -> None:
         if self.active_position is None:
             raise RuntimeError("Position wasn't open")
 
@@ -142,9 +141,11 @@ class Exchange:
         # (в данном случае делаем допущение, что время на получение свечи через API и генерацию сигнала = 0)
         self._close_position(price=self._current_candle.close)
 
-    def on_candle(self, candle: Candle):
+    def on_candle(self, candle: Candle, timeframe: Timeframe) -> None:
         """Обновить состояние биржи и обработать Stop Loss/Take Profit.
         """
+        # TODO: Работа с несколькими timeframe
+
         self._current_candle = candle
 
         if not self.active_position:
@@ -173,7 +174,7 @@ class Strategy(ABC):
         """
         self.exchange: tp.Optional[Exchange] = None
 
-    def setup(self, exchange: Exchange):
+    def setup(self, exchange: Exchange) -> None:
         """Инициализация окружения, в котором работает стратегия, подготовка стратегии к работе.
 
         Данный метод преимущественно должен вызываться на уровне системы (например, во время выполнения backtest-а).
@@ -182,14 +183,31 @@ class Strategy(ABC):
 
         # TODO: Прогрев индикаторов (пока можно делать на уровне дочернего класса стратегии)
 
-    async def backtest(self, symbol: str, timeframe: Timeframe, start_at: dt.datetime, end_at: dt.datetime):
-        return await backtest(self, symbol, timeframe, start_at, end_at)
+    async def backtest(
+        self,
+        ticker: str,
+        timeframes: tp.List[Timeframe],
+        start_at: dt.datetime,
+        end_at: dt.datetime,
+    ) -> 'AccountReport':
+        return await backtest(self, ticker, timeframes, start_at, end_at)
 
     @abstractmethod
-    def on_candle(self, candle: Candle) -> None: ...
+    def on_candle(self, candle: Candle, timeframe: Timeframe) -> None:
+        """Точка входа для выполнения стратегии. Вызывается каждый раз при получии новой свечи.
+
+        ВАЖНО:
+        В самом простом случае, мы работаем на одном timeframe и аргумент `timeframe` можно не использовать
+        (он всегда будет один и тот же). Если работа происходит на нескольких разных timeframe -- нужно обязательно
+        это учитывать в логике стратегии.
+
+        Также, при работе с разными timeframe не рекомендуется завязываться на порядок появления новых свечей. При
+        реальной торговле нет абсолютно никаких гарантий, что например сперва будут поступать свечи 5m, а затем 1h.
+        """
+        raise NotImplementedError
 
 
-@dataclass()
+@dataclass
 class AccountReport:
     _positions: tp.List[Position]
     _start_at: dt.datetime
@@ -198,7 +216,7 @@ class AccountReport:
         return f'{self.__class__.__name__} (profit=...)'
 
     @cached_property
-    def equities(self):
+    def equities(self) -> pd.Series:
         _equities = pd.Series(dtype=object)
         current_eq = EQUITY_INITIAL_AMOUNT
 
@@ -218,7 +236,7 @@ class AccountReport:
         )
 
     @cached_property
-    def summary(self):
+    def summary(self) -> dict:
         df = pd.DataFrame.from_dict(p.as_dict() for p in self._positions)
         return {
             'mean_profit_ratio': RoundedDecimal(df.profit_ratio.mean()),
@@ -235,27 +253,31 @@ class AccountReport:
 
 async def backtest(
     strategy: Strategy,
-    symbol: str,
-    timeframe: Timeframe,
+    ticker: str,
+    timeframes: tp.Iterable[Timeframe],
     start_at: dt.datetime,
     end_at: dt.datetime,
 ) -> AccountReport:
-
     exchange = Exchange()
     strategy.setup(exchange)
 
+    candles: tp.List[tp.Tuple[Candle, Timeframe]] = []
+
     async with BinanceClient() as api_client:
-        logger.info('Fetching candles data...')
-        candles = [
-            candle async for candle in tqdm(api_client.get_futures_historical_candles(
-                symbol=symbol, timeframe=timeframe, start=start_at, end=end_at
-            ))
-        ]
+        for timeframe in timeframes:
+            logger.info('Fetching candles data for %s...', timeframe)
+            candles += [
+                (candle, timeframe) async for candle in tqdm(api_client.get_futures_historical_candles(
+                    ticker=ticker, timeframe=timeframe, start=start_at, end=end_at
+                ))
+            ]
+
+    candles.sort(key=lambda o: o[0].open_time)
 
     logger.info('Perform strategy...')
-    for candle in tqdm(candles):
-        exchange.on_candle(candle)
-        strategy.on_candle(candle)
+    for candle, timeframe in tqdm(candles):
+        exchange.on_candle(candle, timeframe)
+        strategy.on_candle(candle, timeframe)
 
     logger.info('Done!')
     return AccountReport(_positions=exchange.positions, _start_at=start_at)
