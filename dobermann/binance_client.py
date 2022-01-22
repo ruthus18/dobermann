@@ -1,7 +1,6 @@
 import asyncio
 import datetime as dt
 import decimal
-import enum
 import logging
 import typing as tp
 from decimal import Decimal
@@ -9,6 +8,8 @@ from decimal import Decimal
 from binance import AsyncClient, BinanceSocketManager
 from binance.enums import HistoricalKlinesType
 from pydantic import BaseModel, Field, validator
+
+from .utils import StrEnum
 
 from app.config import settings  # FIXME
 
@@ -24,12 +25,6 @@ class Model(BaseModel):
         orm_mode = True
         allow_mutation = False
         allow_population_by_field_name = True
-
-
-class StrEnum(str, enum.Enum):
-
-    def __str__(self) -> str:
-        return self.value
 
 
 class Timeframe(StrEnum):

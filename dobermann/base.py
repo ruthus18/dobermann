@@ -1,5 +1,4 @@
 import datetime as dt
-import enum
 import logging
 import typing as tp
 from abc import ABC, abstractmethod
@@ -16,7 +15,7 @@ from app.config import settings  # FIXME
 
 from . import graphs
 from .binance_client import BinanceClient, Candle, Timeframe
-from .utils import OptDecimal, RoundedDecimal
+from .utils import OptDecimal, RoundedDecimal, StrEnum
 
 logger = logging.getLogger(__name__)
 
@@ -28,22 +27,26 @@ BINANCE_FUTURES_MARKET_COMISSION = Decimal('0.0004')
 EQUITY_INITIAL_AMOUNT = Decimal(1000)
 
 
-class PositionType(enum.StrEnum):
+Ticker = str
+
+
+class PositionType(StrEnum):
     LONG = 'LONG'
     SHORT = 'SHORT'
 
 
 @dataclass
 class Position:
+    ticker: str
     type: PositionType
 
-    enter_time: dt.datetime
     enter_price: Decimal
+    enter_time: dt.datetime
     enter_comission: Decimal
 
-    exit_comission: Decimal = None
-    exit_time: dt.datetime = None
     exit_price: Decimal = None
+    exit_time: dt.datetime = None
+    exit_comission: Decimal = None
 
     stop_loss: Decimal = None
     take_profit: Decimal = None
@@ -82,7 +85,7 @@ class Position:
 
 # TODO: Отразить в доке и названии, что это Exchange для backtesting-а
 class Exchange:
-    """Примитив для выполнения операций на бирже.
+    """Интерфейс для стратегий, имитирующий работу с биржей.
 
     Предоставляет набор операций для открытия/закрытия позиций, отслеживания Stop Loss/Take Profit
     для открытых позиций и сбора статистики по торговому счету.
@@ -92,75 +95,82 @@ class Exchange:
     """
     def __init__(
         self,
-        limit_order_comission: OptDecimal = BINANCE_FUTURES_LIMIT_COMISSION,
         market_order_comission: OptDecimal = BINANCE_FUTURES_MARKET_COMISSION,
+        limit_order_comission: OptDecimal = BINANCE_FUTURES_LIMIT_COMISSION,
     ):
-        self.positions: tp.List[Position] = []
-        self.active_position: tp.Optional[Position] = None
-
         self.market_order_comission = market_order_comission
-        # TODO: На данный момент не используется, на этапе MVP не планируется поддержка limit order
         self.limit_order_comission = limit_order_comission
 
-        self._current_candle: tp.Optional[Candle] = None
+        self.positions: tp.List[Position] = []
+
+        self.prices_now: tp.Dict[Ticker, Decimal] = {}
+        self.time_now: tp.Optional[dt.datetime] = None
 
     def open_market_position(
         self,
+        ticker: str,
         position_type: PositionType = PositionType.LONG,
+        *,
         stop_loss: OptDecimal = None,
         take_profit: OptDecimal = None,
-    ) -> None:
-        if not self._current_candle:
+    ) -> int:
+        price_now = self.prices_now.get(ticker)
+
+        if not price_now or not self.time_now:
             raise RuntimeError('Wrong state of exchange, you should call first `.on_candle()` method!')
 
-        if self.active_position:
-            raise RuntimeError('Position already opened')
-
-        self.active_position = Position(
-            type=position_type,
-            enter_time=self._current_candle.open_time,
-            enter_price=self._current_candle.close,
-            enter_comission=self.market_order_comission,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
+        self.positions.append(
+            Position(
+                ticker=ticker,
+                type=position_type,
+                enter_price=price_now,
+                enter_time=self.time_now,
+                enter_comission=self.market_order_comission,
+                stop_loss=stop_loss,
+                take_profit=take_profit,
+            )
         )
+        return len(self.positions) - 1  # position_id
 
-    def _close_position(self, price: Decimal) -> None:
-        self.active_position.exit_time = self._current_candle.open_time
-        self.active_position.exit_price = price
-        self.active_position.exit_comission = self.market_order_comission
-
-        self.positions.append(self.active_position)
-        self.active_position = None
-
-    def close_market_position(self) -> None:
-        if self.active_position is None:
-            raise RuntimeError("Position wasn't open")
-
+    def close_market_position(self, position_id: int) -> None:
         # Стоимость = цене закрытия предыдущей свечи
         # (в данном случае делаем допущение, что время на получение свечи через API и генерацию сигнала = 0)
-        self._close_position(price=self._current_candle.close)
+        try:
+            position = self.positions[position_id]
+        except IndexError:
+            raise RuntimeError("Position wasn't open")
 
-    def on_candle(self, candle: Candle, timeframe: Timeframe) -> None:
-        """Обновить состояние биржи и обработать Stop Loss/Take Profit.
+        if position.exit_time is not None:
+            raise RuntimeError('Position already closed')
+
+        price_now = self.prices_now.get(position.ticker)
+
+        if not price_now or not self.time_now:
+            raise RuntimeError('Wrong state of exchange, you should call first `.on_candle()` method!')
+
+        position.exit_price = price_now
+        position.exit_time = self.time_now
+        position.exit_comission = self.market_order_comission
+
+    def on_candle(self, candle: Candle, ticker: str) -> None:
+        """Обновить состояние биржи.
+
+        В отличие от `Strategy.on_candle`, в данный метод не передается `timeframe`, т.к. симуляция биржи
+        работает с минимально допустимым таймфреймом.
         """
-        # TODO: Работа с несколькими timeframe
+        self.prices_now[ticker] = candle.close
 
-        self._current_candle = candle
+        open_time = candle.open_time
 
-        if not self.active_position:
-            return
+        if not self.time_now or open_time > self.time_now:
+            self.time_now = open_time
 
-        # Иногда может происходить коллизия SL и TP (свеча достигла оба уровня и мы не знаем, что произошло первым)
-        # В этом случае, намеренно обрабатываем худший случай (срабатываение Stop Loss первым), т.к.
-        # лучше получить более пессимистичный результат тестирования, нежели более оптимистичный
-        if self.active_position.stop_loss and candle.low <= self.active_position.stop_loss <= candle.high:
+        elif open_time < self.time_now:
+            raise RuntimeError('Unable to turn back the time! Check your candles feeding')
 
-            self._close_position(price=self.active_position.stop_loss)
-
-        elif self.active_position.take_profit and candle.low <= self.active_position.take_profit <= candle.high:
-
-            self._close_position(price=self.active_position.take_profit)
+    @property
+    def closed_positions(self) -> tp.List[Position]:
+        return [pos for pos in self.positions if pos.exit_time is not None]
 
 
 class Strategy(ABC):
@@ -173,13 +183,17 @@ class Strategy(ABC):
         (всего что относится непосредственно к торговле).
         """
         self.exchange: tp.Optional[Exchange] = None
+        self.ticker: tp.Optional[str] = None
 
-    def setup(self, exchange: Exchange) -> None:
+        self._position_id: tp.Optional[int] = None
+
+    def setup(self, exchange: Exchange, ticker: str) -> None:
         """Инициализация окружения, в котором работает стратегия, подготовка стратегии к работе.
 
         Данный метод преимущественно должен вызываться на уровне системы (например, во время выполнения backtest-а).
         """
         self.exchange = exchange
+        self.ticker = ticker
 
         # TODO: Прогрев индикаторов (пока можно делать на уровне дочернего класса стратегии)
 
@@ -191,6 +205,30 @@ class Strategy(ABC):
         end_at: dt.datetime,
     ) -> 'AccountReport':
         return await backtest(self, ticker, timeframes, start_at, end_at)
+
+    @property
+    def active_position(self) -> tp.Optional[Position]:
+        if not self._position_id:
+            return None
+
+        return self.exchange.positions[self._position_id]
+
+    def open_market_position(
+        self,
+        position_type: PositionType = PositionType.LONG,
+        stop_loss: OptDecimal = None,
+        take_profit: OptDecimal = None,
+    ) -> None:
+        self._position_id = self.exchange.open_market_position(
+            self.ticker,
+            position_type,
+            stop_loss=stop_loss,
+            take_profit=take_profit,
+        )
+
+    def close_market_position(self) -> None:
+        self.exchange.close_market_position(self._position_id)
+        self._position_id = None
 
     @abstractmethod
     def on_candle(self, candle: Candle, timeframe: Timeframe) -> None:
@@ -254,12 +292,12 @@ class AccountReport:
 async def backtest(
     strategy: Strategy,
     ticker: str,
-    timeframes: tp.Iterable[Timeframe],
+    timeframes: tp.List[Timeframe],
     start_at: dt.datetime,
     end_at: dt.datetime,
 ) -> AccountReport:
     exchange = Exchange()
-    strategy.setup(exchange)
+    strategy.setup(exchange, ticker)
 
     candles: tp.List[tp.Tuple[Candle, Timeframe]] = []
 
@@ -276,8 +314,10 @@ async def backtest(
 
     logger.info('Perform strategy...')
     for candle, timeframe in tqdm(candles):
-        exchange.on_candle(candle, timeframe)
+        if timeframe == timeframes[0]:  # TODO
+            exchange.on_candle(candle, ticker)
+
         strategy.on_candle(candle, timeframe)
 
     logger.info('Done!')
-    return AccountReport(_positions=exchange.positions, _start_at=start_at)
+    return AccountReport(_positions=exchange.closed_positions, _start_at=start_at)
