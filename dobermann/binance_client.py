@@ -9,9 +9,9 @@ from binance import AsyncClient, BinanceSocketManager
 from binance.enums import HistoricalKlinesType
 from pydantic import BaseModel, Field, validator
 
-from .utils import StrEnum
-
 from app.config import settings  # FIXME
+
+from .utils import StrEnum
 
 logger = logging.getLogger(__name__)
 

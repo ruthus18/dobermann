@@ -1,5 +1,5 @@
-import typing as tp
 import enum
+import typing as tp
 from decimal import Decimal
 
 OptDecimal = tp.Optional[Decimal]
