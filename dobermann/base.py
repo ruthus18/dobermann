@@ -274,8 +274,12 @@ class AccountReport:
         )
 
     @cached_property
+    def positions(self) -> pd.DataFrame:
+        return pd.DataFrame.from_dict(p.as_dict() for p in self._positions)
+
+    @cached_property
     def summary(self) -> dict:
-        df = pd.DataFrame.from_dict(p.as_dict() for p in self._positions)
+        df = self.positions
         return {
             'mean_profit_ratio': RoundedDecimal(df.profit_ratio.mean()),
             'gmean_profit_ratio': RoundedDecimal(geometric_mean(df.profit_ratio)),

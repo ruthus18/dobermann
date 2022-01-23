@@ -1,4 +1,5 @@
 import datetime as dt
+import enum
 import typing as tp
 from abc import ABC, abstractmethod
 from decimal import Decimal
@@ -8,6 +9,9 @@ import pandas as pd
 
 from .binance_client import Candle
 from .utils import OptDecimal, RoundedDecimal
+
+
+CACHE_SERIES = False
 
 
 class EMA:
@@ -23,17 +27,19 @@ class EMA:
         return round(Decimal(2) / Decimal(self.size + 1), 4)
 
     def calculate(self, time: dt.datetime, value: Decimal) -> tp.Optional[Decimal]:
-        self.s_data[time] = value
-
         if len(self.s_data) < self.size:
+            self.s_data[time] = value
             return
 
-        if len(self.s) == 0:
+        elif len(self.s) == 0:
             current_ema = RoundedDecimal(self.s_data.tail(self.size).mean())
         else:
             current_ema = (value * self.multiplier) + (self.s[-1] * (1 - self.multiplier))
 
         self.s[time] = current_ema
+
+        if not CACHE_SERIES:
+            self.s = self.s[-1:]
         return current_ema
 
 
@@ -80,16 +86,19 @@ class BollingerBands(Indicator):
 
 class BollingerBandsEMA(Indicator):
 
-    def __init__(self, ema_window: int = 20, stdev_size: int = 2):
-        self.ema_window = ema_window
+    def __init__(self, ema_size: int = 20, stdev_size: int = 2):
+        self.ema_size = ema_size
         self.stdev_size = stdev_size
 
         self.s_price = pd.Series(dtype=object)
 
-        self.ema = EMA(ema_window)
+        self.ema = EMA(ema_size)
         self.s_stdev = pd.Series(dtype=object)
         self.s_lower_band = pd.Series(dtype=object)
         self.s_upper_band = pd.Series(dtype=object)
+
+    @property
+    def s_ema(self) -> pd.Series: return self.ema.s
 
     def calculate(self, candle: Candle) -> tp.Tuple[OptDecimal, OptDecimal, OptDecimal]:
         open_time = candle.open_time
@@ -110,50 +119,95 @@ class BollingerBandsEMA(Indicator):
 
         return lower_band, ema, upper_band
 
-    @property
-    def s_ema(self) -> pd.Series: return self.ema.s
-
 
 class MACD(Indicator):
 
-    def __init__(self, ema_long_window: int = 26, ema_short_window: int = 12, ema_signal_window: int = 9):
-        self.ema_long = EMA(ema_long_window)
-        self.ema_short = EMA(ema_short_window)
-        self.ema_signal = EMA(ema_signal_window)
+    def __init__(self, long_ema_size: int = 26, short_ema_size: int = 12, signal_ema_size: int = 9):
+        self.long_ema = EMA(long_ema_size)
+        self.short_ema = EMA(short_ema_size)
+        self.signal_ema = EMA(signal_ema_size)
 
         self.s_macd = pd.Series(dtype=object)
         self.s_macd_histogram = pd.Series(dtype=object)
 
+    @property
+    def s_long_ema(self) -> pd.Series: return self.long_ema.s
+
+    @property
+    def s_short_ema(self) -> pd.Series: return self.short_ema.s
+
+    @property
+    def s_signal_ema(self) -> pd.Series: return self.signal_ema.s
+
     def calculate(self, candle: Candle) -> tp.Tuple[OptDecimal, OptDecimal]:
-        open_time = candle.open_time
+        time, price = candle.open_time, candle.close
         price = candle.close
 
-        ema_short = self.ema_short.calculate(open_time, price)
-        ema_long = self.ema_long.calculate(open_time, price)
+        long_value = self.long_ema.calculate(time, price)
+        short_value = self.short_ema.calculate(time, price)
 
-        if ema_short is None or ema_long is None:
+        if short_value is None or long_value is None:
             return None, None
 
-        macd = ema_short - ema_long
-        self.s_macd[open_time] = macd
+        macd_value = short_value - long_value
+        self.s_macd[time] = macd_value
 
-        ema_signal = self.ema_signal.calculate(open_time, macd)
-        if ema_signal is None:
+        signal_value = self.ema_signal.calculate(time, macd_value)
+        if signal_value is None:
             return None, None
 
-        macd_histogram = macd - ema_signal
-        self.s_macd_histogram[open_time] = macd_histogram
+        histogram_value = macd_value - signal_value
+        self.s_macd_histogram[time] = histogram_value
 
-        return ema_signal, macd_histogram
+        return signal_value, histogram_value
+
+
+class EMACross(Indicator):
+
+    class Signal(enum.IntEnum):
+        BEAR = -1
+        NEUTRAL = 0
+        BULL = 1
+
+    def __init__(self, short_ema_size: int, long_ema_size: int):
+        self.long_ema = EMA(long_ema_size)
+        self.short_ema = EMA(short_ema_size)
+
+        self.s_signal = pd.Series(dtype=np.int8)
 
     @property
-    def s_ema_long(self) -> pd.Series: return self.ema_long.s
+    def s_long_ema(self) -> pd.Series: return self.long_ema.s
 
     @property
-    def s_ema_short(self) -> pd.Series: return self.ema_short.s
+    def s_short_ema(self) -> pd.Series: return self.short_ema.s
 
-    @property
-    def s_ema_signal(self) -> pd.Series: return self.ema_signal.s
+    def calculate(self, candle: Candle) -> tp.Optional['Signal']:
+        time, price = candle.open_time, candle.close
+
+        long_now = self.long_ema.calculate(time, price)
+        short_now = self.short_ema.calculate(time, price)
+
+        if long_now is None or short_now is None or len(self.s_long_ema) < 2 or len(self.s_short_ema) < 2:
+            return None  # индикаторы не прогрелись
+
+        prev_diff = self.s_short_ema[-2] - self.s_long_ema[-2]
+        now_diff = short_now - long_now
+
+        # Короткая EMA пробивает вверх длинную EMA
+        if prev_diff > 0 and now_diff < 0:
+            signal = self.Signal.BULL
+
+        # Короткая EMA пробивает вниз длинную EMA
+        elif prev_diff < 0 and now_diff > 0:
+            signal = self.Signal.BEAR
+
+        else:
+            signal = self.Signal.NEUTRAL
+
+        if CACHE_SERIES:
+            self.s_signal[time] = signal
+
+        return signal        
 
 
 class StohasticOscillator(Indicator):
