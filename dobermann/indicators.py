@@ -11,7 +11,7 @@ from .binance_client import Candle
 from .utils import OptDecimal, RoundedDecimal
 
 
-CACHE_SERIES = False
+CACHE_SERIES = True
 
 
 class EMA:
@@ -141,7 +141,6 @@ class MACD(Indicator):
 
     def calculate(self, candle: Candle) -> tp.Tuple[OptDecimal, OptDecimal]:
         time, price = candle.open_time, candle.close
-        price = candle.close
 
         long_value = self.long_ema.calculate(time, price)
         short_value = self.short_ema.calculate(time, price)
@@ -207,7 +206,49 @@ class EMACross(Indicator):
         if CACHE_SERIES:
             self.s_signal[time] = signal
 
-        return signal        
+        return signal
+
+
+class LowHighEMA(Indicator):
+
+    def __init__(self, ema_size: int = 20, bear_bull_size: int = 50):
+        self.ema_low = EMA(size=ema_size)
+        self.ema_high = EMA(size=ema_size)
+
+        self.ema_low_price = EMA(size=2)
+        self.ema_high_price = EMA(size=2)
+
+        # self.bear_bull_size = bear_bull_size  
+
+        self.s_ema_bull_signal = pd.Series(dtype=np.float64)
+        self.s_ema_bear_signal = pd.Series(dtype=np.float64)
+
+    @property
+    def s_ema_diff_signal(self) -> pd.Series:
+        return self.s_ema_high_signal - self.s_ema_low_signal
+
+    def calculate(self, candle: Candle) -> tp.Any:
+        low_price, high_price = candle.low, candle.high
+        time = candle.open_time
+
+        # Строим канал скользящей средней
+        ema_low_value = self.ema_low.calculate(time, low_price)
+        ema_high_value = self.ema_high.calculate(time, high_price)
+
+        # Сглаживание цены максимально короткой EMA
+        ema_low_price = self.ema_low_price.calculate(time, low_price)
+        ema_high_price = self.ema_high_price.calculate(time, high_price)
+
+        if ema_low_value is None or ema_high_value is None:
+            return None, None
+
+        ema_bull_signal = ema_high_price - ema_high_value
+        ema_bear_signal = ema_low_price - ema_low_value
+
+        self.s_ema_bull_signal[time] = ema_bull_signal
+        self.s_ema_bear_signal[time] = ema_bear_signal
+
+        return ema_bull_signal, ema_bear_signal
 
 
 class StohasticOscillator(Indicator):
