@@ -1,7 +1,7 @@
 import enum
 
 from dobermann import Candle, PositionType, Strategy, Timeframe, indicators
-from dobermann.indicators import EMACross
+from dobermann.indicators import EMACross, LowHighEMA
 
 
 class BollingerTestStrategy(Strategy):
@@ -88,3 +88,16 @@ class FractalEMAStrategy(Strategy):
 
         elif self.active_position and self.signal_5m != EMACross.Signal.NEUTRAL:
             self.close_market_position()
+
+
+class LowHighEMAStrategy(Strategy):
+
+    def __init__(self):
+        super().__init__()
+        self.low_high_ema = LowHighEMA()
+
+    def on_candle(self, candle: Candle, _) -> None:
+        bull_signal, bear_signal = self.low_high_ema.calculate(candle)
+
+        if bull_signal is None:
+            return

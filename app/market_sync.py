@@ -5,10 +5,12 @@ import typing as tp
 from functools import partial
 
 from tortoise import timezone as tz
+from tqdm.asyncio import tqdm
 
 from dobermann import BinanceClient, Timeframe
+from dobermann.binance_client import client
 
-from . import models, scheduler
+from . import db, models, scheduler
 
 if tp.TYPE_CHECKING:
     from dobermann import FuturesAsset
@@ -52,34 +54,65 @@ async def sync_candles(timeframe: Timeframe):
     open_time = tz.now().replace(second=0, microsecond=0) - timeframe_to_delta[timeframe]
     assets = await models.Asset.active().only('id', 'ticker')
 
-    async def coro(asset: models.Asset, client: BinanceClient) -> models.Candle:
-        candle = [
-            c for c in await client.get_recent_candles(asset.ticker, timeframe)
-            if c.open_time == open_time
-        ][0]
-
-        await models.Candle.create(
-            asset=asset, timeframe=timeframe, **candle.dict()
-        )
-
-        return candle
-
     async with BinanceClient() as client:
-        tasks = [coro(asset, client) for asset in assets]
-        candles = await asyncio.gather(*tasks)
+
+        async def coro(asset: models.Asset) -> models.Candle:
+            candle = [
+                # TODO: Получать время свечи исходя из tz.now()
+                c for c in await client.get_recent_candles(asset.ticker, timeframe)
+                if c.open_time == open_time
+            ][0]
+
+            await models.Candle.create(
+                asset=asset, timeframe=timeframe, **candle.dict()
+            )
+
+            return candle
+
+        candles = await asyncio.gather(coro(asset) for asset in assets)
 
     logger.info('Total candles: %s, timestamp: %s', len(candles), candles[0].open_time)
 
 
+MIN_CANDLE_TIME = dt.datetime(2010, 1, 1)
+
+
 @scheduler.job()
-async def fix_gaps_in_candles():
-    ...
+async def load_candles(timeframe: Timeframe):
+    """Загрузить свечи для всех активов на выбранном таймфрейме.
+    
+    Функция загружает исторические свечи, которые отсутствуют в базе данных.
+    """
+    sql = f'''
+        SELECT asset.id, asset.ticker, max(candle.open_time) FROM asset
+            LEFT JOIN candle ON asset.id = candle.asset_id
+        WHERE candle.timeframe = '{timeframe}' GROUP BY asset.id;
+    '''
+    asset_2_last_candles_at = await db.query(sql)
+    print(len(asset_2_last_candles_at))
+
+    now = tz.now()
+
+    for asset_id, ticker, last_candle_time in asset_2_last_candles_at:
+        start_at = last_candle_time or MIN_CANDLE_TIME
+        end_at = now
+
+        logger.info('Fetching candles for %s (%s - %s)', ticker, start_at, end_at)
+
+        candles = [candle async for candle in tqdm(client.get_futures_historical_candles(
+            ticker=ticker, timeframe=timeframe, start=start_at, end=end_at
+        ))]
+
+        await models.Candle.bulk_create([models.Candle(
+            asset_id=asset_id, timeframe=timeframe, **candle.dict()
+        )] for candle in candles)
+        logger.info('Created %s candles for %s', len(candles), ticker)
 
 
 def main():
     scheduler.add_job(
         sync_assets,
-        '59 0 * * *',  # everyday at 0:59
+        '58 * * * *',  # every hour before candles sync
     )
     scheduler.add_job(
         partial(sync_candles, Timeframe.M1),
