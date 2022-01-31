@@ -10,7 +10,9 @@ from apscheduler.triggers.base import BaseTrigger
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
-from . import models
+from dobermann.binance_client import client
+
+from . import db
 from .config import settings
 
 logger = logging.getLogger(__name__)
@@ -69,7 +71,8 @@ async def run_scheduler():
 
     logger.info('Starting scheduler...')
 
-    await models.init_db()
+    await db.init()
+    await client.connect()
     scheduler.start()
 
     try:
@@ -78,4 +81,5 @@ async def run_scheduler():
     finally:
         logger.info('Shutdown scheduler...')
         scheduler.shutdown()
-        await models.close_db()
+        await db.close()
+        await client.close()

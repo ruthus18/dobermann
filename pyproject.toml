@@ -1,7 +1,7 @@
 [tool.poetry]
 name = "dobermann"
 version = "0.1.0"
-description = "Tools for cryptotrading"
+description = "Tools for research and deploy trading strategies"
 authors = ["Danil Tryapchev <ruthus18@gmail.com>"]
 license = "MIT"
 

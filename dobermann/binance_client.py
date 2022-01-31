@@ -270,3 +270,6 @@ class BinanceClient:
     #         timeInForce=time_in_force,
     #     )
     # </DRAFT>
+
+
+client = BinanceClient()
