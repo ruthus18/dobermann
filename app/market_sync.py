@@ -109,6 +109,7 @@ async def load_candles(timeframe: Timeframe):
         logger.info('Created %s candles for %s', len(candles), ticker)
 
 
+# TODO: Раздельно конфигурировать lab и live среду
 def main():
     scheduler.add_job(
         sync_assets,

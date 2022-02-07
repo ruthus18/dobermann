@@ -1,15 +1,19 @@
 import datetime as dt
+import importlib
 import logging
 import typing as tp
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from functools import cached_property
+from joblib import Parallel, delayed
+import time
 from statistics import geometric_mean
 
 import pandas as pd
 import plotly.graph_objects as go
-from tqdm.asyncio import tqdm
+from tqdm import tqdm
+from tqdm.asyncio import tqdm as tqdm_async
 
 from app.config import settings  # FIXME
 
@@ -106,6 +110,7 @@ class Exchange:
         self.prices_now: tp.Dict[Ticker, Decimal] = {}
         self.time_now: tp.Optional[dt.datetime] = None
 
+    # TODO: Объединить в open_position, limit или market - определяется на уровне реализации и передаваемых параметров 
     def open_market_position(
         self,
         ticker: str,
@@ -182,56 +187,57 @@ class Strategy(ABC):
         Stop Loss/Take Profit для позиций, параметры индикаторов и пр.
         (всего что относится непосредственно к торговле).
         """
-        self.exchange: tp.Optional[Exchange] = None
-        self.ticker: tp.Optional[str] = None
+        # self.exchange: tp.Optional[Exchange] = None
+        # self.ticker: tp.Optional[str] = None
 
-        self._position_id: tp.Optional[int] = None
+        # self._position_id: tp.Optional[int] = None
 
-    def setup(self, exchange: Exchange, ticker: str) -> None:
-        """Инициализация окружения, в котором работает стратегия, подготовка стратегии к работе.
+    # def setup(self, exchange: Exchange, ticker: str) -> None:
+    #     """Инициализация окружения, в котором работает стратегия, подготовка стратегии к работе.
 
-        Данный метод преимущественно должен вызываться на уровне системы (например, во время выполнения backtest-а).
-        """
-        self.exchange = exchange
-        self.ticker = ticker
+    #     Данный метод преимущественно должен вызываться на уровне системы (например, во время выполнения backtest-а).
+    #     """
+    #     self.exchange = exchange
+    #     self.ticker = ticker
+    #     # self.timeframe = timeframe
 
-        # TODO: Прогрев индикаторов (пока можно делать на уровне дочернего класса стратегии)
+    #     # TODO: Прогрев индикаторов (пока можно делать на уровне дочернего класса стратегии)
 
-    async def backtest(
-        self,
-        ticker: str,
-        timeframes: tp.List[Timeframe],
-        start_at: dt.datetime,
-        end_at: dt.datetime,
-    ) -> 'AccountReport':
-        return await backtest(self, ticker, timeframes, start_at, end_at)
+    # async def backtest(
+    #     self,
+    #     ticker: str,
+    #     timeframes: tp.List[Timeframe],
+    #     start_at: dt.datetime,
+    #     end_at: dt.datetime,
+    # ) -> 'AccountReport':
+    #     return await backtest(self, ticker, timeframes, start_at, end_at)
 
-    @property
-    def active_position(self) -> tp.Optional[Position]:
-        if not self._position_id:
-            return None
+    # @property
+    # def active_position(self) -> tp.Optional[Position]:
+    #     if not self._position_id:
+    #         return None
 
-        return self.exchange.positions[self._position_id]
+    #     return self.exchange.positions[self._position_id]
 
-    def open_market_position(
-        self,
-        position_type: PositionType = PositionType.LONG,
-        stop_loss: OptDecimal = None,
-        take_profit: OptDecimal = None,
-    ) -> None:
-        self._position_id = self.exchange.open_market_position(
-            self.ticker,
-            position_type,
-            stop_loss=stop_loss,
-            take_profit=take_profit,
-        )
+    # def open_market_position(
+    #     self,
+    #     position_type: PositionType = PositionType.LONG,
+    #     stop_loss: OptDecimal = None,
+    #     take_profit: OptDecimal = None,
+    # ) -> None:
+    #     self._position_id = self.exchange.open_market_position(
+    #         self.ticker,
+    #         position_type,
+    #         stop_loss=stop_loss,
+    #         take_profit=take_profit,
+    #     )
 
-    def close_market_position(self) -> None:
-        self.exchange.close_market_position(self._position_id)
-        self._position_id = None
+    # def close_market_position(self) -> None:
+    #     self.exchange.close_market_position(self._position_id)
+    #     self._position_id = None
 
     @abstractmethod
-    def on_candle(self, candle: Candle, timeframe: Timeframe) -> None:
+    def on_candle(self, candle: Candle) -> None:
         """Точка входа для выполнения стратегии. Вызывается каждый раз при получии новой свечи.
 
         ВАЖНО:
@@ -293,35 +299,89 @@ class AccountReport:
         }
 
 
+# async def backtest(
+#     strategy: Strategy,
+#     assets: tp.List[Ticker],
+#     timeframes: tp.List[Timeframe],
+#     start_at: dt.datetime,
+#     end_at: dt.datetime,
+# ) -> AccountReport:
+#     exchange = Exchange()
+#     strategy.setup(exchange)
+
+#     candles: tp.List[tp.Tuple[Candle, Timeframe]] = []
+
+#     async with BinanceClient() as api_client:
+#         for timeframe in timeframes:
+#             logger.info('Fetching candles data for %s...', timeframe)
+#             candles += [
+#                 (candle, timeframe) async for candle in tqdm(api_client.get_futures_historical_candles(
+#                     ticker=ticker, timeframe=timeframe, start=start_at, end=end_at
+#                 ))
+#             ]
+
+#     candles.sort(key=lambda o: o[0].open_time)
+
+#     logger.info('Perform strategy...')
+#     for candle, timeframe in tqdm(candles):
+#         if timeframe == timeframes[0]:  # TODO
+#             exchange.on_candle(candle)
+
+#         strategy.on_candle(candle, timeframe)
+
+#     logger.info('Done!')
+#     return AccountReport(_positions=exchange.closed_positions, _start_at=start_at)
+
+
+POOL_SIZE = 6
+
+
 async def backtest(
-    strategy: Strategy,
-    ticker: str,
+    strategy_cls: tp.Type[Strategy],
+    tickers: tp.List[Ticker],
     timeframes: tp.List[Timeframe],
     start_at: dt.datetime,
     end_at: dt.datetime,
 ) -> AccountReport:
-    exchange = Exchange()
-    strategy.setup(exchange, ticker)
+    started = time.time()
 
-    candles: tp.List[tp.Tuple[Candle, Timeframe]] = []
+    candles = {}
 
-    async with BinanceClient() as api_client:
-        for timeframe in timeframes:
-            logger.info('Fetching candles data for %s...', timeframe)
-            candles += [
-                (candle, timeframe) async for candle in tqdm(api_client.get_futures_historical_candles(
-                    ticker=ticker, timeframe=timeframe, start=start_at, end=end_at
-                ))
-            ]
+    async with BinanceClient() as client:
+        for ticker in tickers:
+            for timeframe in timeframes:
 
-    candles.sort(key=lambda o: o[0].open_time)
+                logger.info('Fetching candles data: a=%s, T=%s', ticker, timeframe)
+                candles[(ticker, timeframe)] = [
+                    candle async for candle in tqdm_async(client.get_futures_historical_candles(
+                        ticker=ticker, timeframe=timeframe, start=start_at, end=end_at
+                    ))
+                ]
 
-    logger.info('Perform strategy...')
-    for candle, timeframe in tqdm(candles):
-        if timeframe == timeframes[0]:  # TODO
-            exchange.on_candle(candle, ticker)
+    pool = Parallel(n_jobs=POOL_SIZE)
+    position_signals = pool(
+        delayed(_backtest)(strategy_cls.__module__, strategy_cls.__name__, ticker, timeframe, candles)
+    )
 
-        strategy.on_candle(candle, timeframe)
+    elapsed = time.time() - started
+    logger.info('Time elapsed: %.2fs', elapsed)
 
-    logger.info('Done!')
-    return AccountReport(_positions=exchange.closed_positions, _start_at=start_at)
+    return position_signals
+
+
+def _backtest(
+    strategy_path: str,
+    strategy_name: str,
+    ticker: Ticker,
+    timeframe: Timeframe,
+    candles: tp.List[Candle],
+) -> pd.Series:
+    strategy_cls = getattr(importlib.import_module(strategy_path), strategy_name)
+    strategy = strategy_cls()
+
+    logger.info('Performing strategy: a=%s, T=%s', ticker, timeframe)
+    for candle in tqdm(candles):
+        strategy.on_candle(candle)
+
+    logger.info('Strategy finished: a=%s, T=%s', ticker, timeframe)
+    return strategy
