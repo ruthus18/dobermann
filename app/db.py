@@ -25,7 +25,7 @@ async def truncate(model: models.Model):
     return await query(f'TRUNCATE TABLE {model._meta.db_table}')
 
 
-async def db_size() -> str:
+async def get_size() -> str:
     result = await query(f"SELECT pg_database_size('{settings.DB_NAME}')/1024 AS kb_size;")
 
     size_mb = result[0].get('kb_size') / 1024  # type: ignore

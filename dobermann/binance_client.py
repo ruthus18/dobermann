@@ -64,6 +64,7 @@ class FuturesAsset(Asset):
 
 class Candle(Model):
     open_time: dt.datetime
+    close_time: dt.datetime
     open: Decimal
     close: Decimal
     low: Decimal
@@ -158,14 +159,17 @@ class BinanceClient:
         ]
 
     async def get_futures_historical_candles(
-        self, ticker: str, timeframe: Timeframe, start: dt.datetime, end: dt.datetime
+        self, ticker: str, timeframe: Timeframe, start: dt.datetime, end: tp.Optional[dt.datetime] = None
     ) -> tp.AsyncGenerator[None, Candle]:
         """Get historical klines for a futures
 
         Docs: https://binance-docs.github.io/apidocs/futures/en/#kline-candlestick-data
         """
         start_ts = str(int(start.timestamp()))
-        end_ts = str(int(end.timestamp()))
+        end_ts = None
+
+        if end:
+            end_ts = str(int(end.timestamp())) 
 
         data_generator = await self._client.futures_historical_klines_generator(
             symbol=ticker,

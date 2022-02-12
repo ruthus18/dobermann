@@ -369,19 +369,19 @@ async def backtest(
     return position_signals
 
 
-def _backtest(
-    strategy_path: str,
-    strategy_name: str,
-    ticker: Ticker,
-    timeframe: Timeframe,
-    candles: tp.List[Candle],
-) -> pd.Series:
-    strategy_cls = getattr(importlib.import_module(strategy_path), strategy_name)
-    strategy = strategy_cls()
+# def _backtest(
+#     strategy_path: str,
+#     strategy_name: str,
+#     ticker: Ticker,
+#     timeframe: Timeframe,
+#     candles: tp.List[Candle],
+# ) -> pd.Series:
+#     strategy_cls = getattr(importlib.import_module(strategy_path), strategy_name)
+#     strategy = strategy_cls()
 
-    logger.info('Performing strategy: a=%s, T=%s', ticker, timeframe)
-    for candle in tqdm(candles):
-        strategy.on_candle(candle)
+#     logger.info('Performing strategy: a=%s, T=%s', ticker, timeframe)
+#     for candle in tqdm(candles):
+#         strategy.on_candle(candle)
 
-    logger.info('Strategy finished: a=%s, T=%s', ticker, timeframe)
-    return strategy
+#     logger.info('Strategy finished: a=%s, T=%s', ticker, timeframe)
+#     return strategy
