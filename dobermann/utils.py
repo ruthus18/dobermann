@@ -23,4 +23,6 @@ async def cancel_task(task: asyncio.Task):
     try:
         await task
     except asyncio.CancelledError:
-        yield
+        pass
+
+    yield

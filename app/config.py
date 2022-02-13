@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     TORTOISE_ORM: Dict[str, Any] = {}
 
     TZ_NAME: str = 'Asia/Yekaterinburg'
-    TIMEZONE: Optional[DstTzInfo] = None
+    TIMEZONE: Any = None
 
     LOGGING_LEVEL: Literal['DEBUG', 'INFO', 'ERROR'] = Field('INFO')
     LOGGING: Dict[str, Any] = {}
