@@ -1,13 +1,9 @@
 import asyncio
 import datetime as dt
 import logging.config
-import signal
-import time
 import typing as tp
-from abc import ABC, abstractmethod
-from copy import copy
-import multiprocessing as mp
-import multiprocessing.connection as mp_connection
+from concurrent.futures import ProcessPoolExecutor
+from contextlib import suppress
 
 import simplejson as json
 import zmq
@@ -18,46 +14,101 @@ from app import db, models
 from app.config import settings
 
 from .base import Strategy, Ticker, Timeframe
-from .utils import cancel_task
+from .utils import cancel_task, split_list_round_robin
 
 logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')
 
 
-LOGS_URL = 'tcp://127.0.0.1:7267'
-FEED_URL = 'tcp://127.0.0.1:7268'
-WORKER_URL = 'tcp://127.0.0.1:7269'
+WORKERS_POOL_SIZE = 12
 
-WORKER_PROCESSES_NUM = 10
-
-
-class Actor(ABC):
-    name = NotImplemented
-
-    def __init__(self):
-        self.zmq_ctx = Context.instance()
-        self._logs_sock = self.zmq_ctx.socket(zmq.PUSH)
-
-    async def log(self, message: str):
-        await self._logs_sock.send_string(f'{self.name};{message}')
-
-    async def setup(self):
-        self._logs_sock.connect(LOGS_URL)
-        await self.log('Connected')
-
-    async def shutdown(self):
-        await self.log('Disconnected')
-        await asyncio.sleep(0.01)  # wait while log sending through socket
-        self._logs_sock.close()
-
-    @abstractmethod
-    async def run(self): ...
+MANAGER_URL = 'tcp://127.0.0.1:4503'
+FEED_URL = 'tcp://127.0.0.1:4504'
 
 
-class MarketFeed(Actor):
-    """Base class for supplying market data to trading system.
-    """
-    name = 'feed'
+class Worker:
+
+    def __init__(self, w_id: int, tickers: tp.List[Ticker]):
+        self.w_id = w_id
+        self.tickers = tickers
+
+        self.log = logger.getChild(f'worker[{w_id}]')
+
+    async def run(self):
+        self.log.debug('Worker started')
+
+        _zmq_ctx = Context.instance()
+        sock = _zmq_ctx.socket(zmq.SUB)
+        sock.connect(FEED_URL)
+        sock.connect(MANAGER_URL)
+
+        for ticker in self.tickers:
+            sock.setsockopt_string(zmq.SUBSCRIBE, ticker)
+            self.log.debug('Subscribed to candle %s', ticker)
+
+        sock.setsockopt_string(zmq.SUBSCRIBE, '0')  # shutdown event
+
+        self.log.debug('Waiting events...')
+        while True:
+            msg = await sock.recv_string()
+            # self.log.debug('Got event: %s', msg)
+
+            if msg == '0':
+                sock.close()
+                self.log.debug('Worker stopped')
+                return
+
+            ticker, candle = msg.split(';')
+
+
+def spawn_worker(w_id: int, tickers: list):
+    worker = Worker(w_id, tickers)
+    try:
+        asyncio.run(worker.run())
+    except (KeyboardInterrupt, SystemExit):
+        worker.log.debug('Force shutdown worker...')
+
+
+class Manager:
+
+    def __init__(self, strategy: Strategy, tickers: tp.List[Ticker]):
+        super().__init__()
+
+        self.strategy = strategy
+        self.tickers = tickers
+
+        self.log = logger.getChild('manager')
+
+    async def run(self):
+        self.log.debug('Manager started')
+
+        _zmq_ctx = Context.instance()
+        manager_sock = _zmq_ctx.socket(zmq.PUB)
+        manager_sock.bind(MANAGER_URL)
+
+        pool_size = min(WORKERS_POOL_SIZE, len(self.tickers))
+        tickers_splitted = split_list_round_robin(self.tickers, pool_size)
+
+        loop = asyncio.get_event_loop()
+        pool = ProcessPoolExecutor(max_workers=WORKERS_POOL_SIZE)
+
+        with suppress(asyncio.CancelledError):
+            tasks = [
+                loop.run_in_executor(
+                    pool, spawn_worker, w_id, tickers_splitted[w_id]
+                )
+                for w_id in range(pool_size)
+            ]
+
+            await asyncio.sleep(float('inf'))  # wait cancellation
+
+        self.log.debug('Shutdown workers...')
+        await manager_sock.send_string('0')
+
+        await asyncio.wait(tasks)
+        pool.shutdown(wait=True)
+
+        self.log.debug('Manager stopped')
 
 
 def candle_to_json(obj: models.Candle) -> str:
@@ -75,7 +126,7 @@ def candle_to_json(obj: models.Candle) -> str:
     )
 
 
-class BacktestingMarketFeed(MarketFeed):
+class CandlesFeed:
 
     def __init__(
         self,
@@ -94,15 +145,7 @@ class BacktestingMarketFeed(MarketFeed):
 
         self.timeframe = timeframe
 
-        self.feed_sock = self.zmq_ctx.socket(zmq.PUSH)
-
-    async def setup(self):
-        self.feed_sock.bind(FEED_URL)
-        await super().setup()
-
-    async def shutdown(self):
-        self.feed_sock.close()
-        await super().shutdown()
+        self.log = logger.getChild('feed')
 
     async def get_assets_from_db(self) -> QuerySet[models.Asset]:
         filter_kwargs = {
@@ -114,187 +157,62 @@ class BacktestingMarketFeed(MarketFeed):
         return await models.Asset.filter(**filter_kwargs)
 
     async def run(self):
-        self.assets = await self.get_assets_from_db()
-        await self.log(f'Assets loaded: {len(self.assets)}')
+        _zmq_ctx = Context.instance()
+        feed_sock = _zmq_ctx.socket(zmq.PUB)
+        feed_sock.bind(FEED_URL)
 
-        candles_iter = models.Candle.filter(
-            asset__ticker__in=[a.ticker for a in self.assets],
-            timeframe=self.timeframe,
-            open_time__gte=self.start_at,
-            open_time__lte=self.end_at,
-        ).select_related('asset').order_by('open_time')
+        self.log.debug('Candles feed started')
 
-        async for candle in candles_iter:
-            json_msg = candle_to_json(candle)
+        with suppress(asyncio.CancelledError):
 
-            await self.feed_sock.send_string(f'{candle.asset.ticker};{json_msg}')
+            self.assets = await self.get_assets_from_db()
+            self.log.debug('Assets loaded: %s', len(self.assets))
 
-        await asyncio.sleep(float('inf'))  # wait cancellation
+            candles_iter = models.Candle.filter(
+                asset__ticker__in=[a.ticker for a in self.assets],
+                timeframe=self.timeframe,
+                open_time__gte=self.start_at,
+                open_time__lte=self.end_at,
+            ).select_related('asset').order_by('open_time')
 
 
-class StrategyDispatcher(Actor):
-    name = 'dispatcher'
+            self.log.debug('Sending candles to workers...')
+            self.log.debug('Total candles: %s', await candles_iter.count())
 
-    def __init__(self, strategy: Strategy, tickers: tp.List[Ticker], workers_n: int):
-        super().__init__()
+            async for candle in candles_iter:
+                json_msg = candle_to_json(candle)
 
-        self.strategy = strategy
-        self.tickers = tickers
-        self.workers_n = workers_n
+                await feed_sock.send_string(f'{candle.asset.ticker};{json_msg}')
 
-        self.feed_sock = self.zmq_ctx.socket(zmq.PULL)
-        self.worker_sock = self.zmq_ctx.socket(zmq.PUB)
-
-        self.router = {}  # ticker -> worker_id
-        self.workers: tp.List[mp.Process] = []
-
-    async def setup_workers(self):
-        await self.log('Launching workers...')
-
-        workers_num = min(self.workers_n, len(self.tickers))
-
-        for worker_id in range(workers_num):
-            worker = mp.Process(target=StrategyWorker.spawn, args=(copy(self.strategy), worker_id))
-            worker.start()
-
-            self.workers.append(worker)
-
-    async def setup(self):
-        self.worker_sock.bind(WORKER_URL)
-        self.feed_sock.connect(FEED_URL)
-        await super().setup()
-
-        await self.setup_workers()
-
-    async def shutdown_workers(self):
-        await self.log('Waiting workers to shutdown...')
-        for worker in self.workers:
-            worker.terminate()
-
-        mp_connection.wait(worker.sentinel for worker in self.workers)
-
-    async def shutdown(self):
-        await self.shutdown_workers()
-
-        self.feed_sock.close()
-        self.worker_sock.close()
-
-        await super().shutdown()
-
-    async def run(self):
-        await asyncio.sleep(5)
-
-        while True:
+            self.log.debug('Finish sending candles')
             await asyncio.sleep(float('inf'))  # wait cancellation
 
-
-class StrategyWorker(Actor):
-    _name = 'worker[{id}]'
-    
-    def __init__(self, strategy: Strategy, w_id: int):
-        super().__init__()
-
-        self.strategy = strategy
-        self.w_id = w_id
-
-        self.worker_sock = self.zmq_ctx.socket(zmq.SUB)
-
-    @property
-    def name(self):
-        return self._name.format(id=self.w_id)
-
-    async def setup(self):
-        self.worker_sock.connect(WORKER_URL)
-        await super().setup()
-
-    async def shutdown(self):
-        self.worker_sock.close()
-        await super().shutdown()
-
-    async def _spawn(self):
-        loop = asyncio.get_event_loop()
-
-        stop_event = asyncio.Event()
-        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-            loop.add_signal_handler(sig, stop_event.set)
-
-        await self.setup()
-
-        main_task = asyncio.create_task(self.run())
-        stop_event_task = asyncio.create_task(stop_event.wait())
-
-        try:
-            await asyncio.wait(
-                (main_task, stop_event_task),
-                return_when=asyncio.FIRST_COMPLETED,
-            )
-        finally:
-            async with cancel_task(main_task):
-                await self.shutdown()
-
-    @classmethod
-    def spawn(cls, *args):
-        self = cls(*args)
-        asyncio.run(self._spawn())
-
-    async def run(self):
-        while True:
-            msg = await self.worker_sock.recv_string()
-            await self.log(f'Got message: {msg}')
-
-
-async def logs_watcher(logs_sock: zmq.Socket) -> None:
-    while True:
-        event = await logs_sock.recv_string()
-        name, msg = event.split(';')
-
-        logger.getChild(name).info(msg)
+        self.log.debug('Candles feed stopped')
 
 
 async def run_trading_system(
-    market_feed: MarketFeed,
-    dispatcher: StrategyDispatcher,
+    candles_feed: CandlesFeed,
+    manager: Manager,
 ):
-    logger.info('Starting trading system')
-
-    loop = asyncio.get_event_loop()
-
-    stop_event = asyncio.Event()
-    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        loop.add_signal_handler(sig, stop_event.set)
-
-    _zmq_ctx = Context.instance()
-    logs_sock = _zmq_ctx.socket(zmq.PULL)
-    logs_sock.bind(LOGS_URL)
-
-    await market_feed.setup()
-    await dispatcher.setup()
-
-    logger_task = asyncio.create_task(logs_watcher(logs_sock))
-
-    feed_task = asyncio.create_task(market_feed.run())
-    dispatcher_task = asyncio.create_task(dispatcher.run())
-
-    wait_stop_task = asyncio.create_task(stop_event.wait())
+    logger.info('Trading system started')
+    t_manager = asyncio.create_task(manager.run())
+    t_other = asyncio.create_task(candles_feed.run())
 
     try:
         await asyncio.wait(
-            (wait_stop_task, feed_task, dispatcher_task),
-            return_when=asyncio.FIRST_COMPLETED,
+            [t_manager, t_other],
+            return_when=asyncio.FIRST_COMPLETED
         )
-        logger.info('Shutdown system...')
+    except (KeyboardInterrupt, SystemExit):
+        pass
 
     finally:
-        async with cancel_task(dispatcher_task):
-            await dispatcher.shutdown()
+        logger.debug('Waiting tasks to complete...')
 
-        async with cancel_task(feed_task):
-            await market_feed.shutdown()
+        await cancel_task(t_manager)
+        await cancel_task(t_other)
 
-        async with cancel_task(logger_task):
-            logs_sock.close()
-
-    logger.info('Trading system is stopped')
+        logger.info('Trading system is stopped, goodbye 👋')
 
 
 async def backtest(
@@ -302,41 +220,24 @@ async def backtest(
     start_at: dt.datetime,
     end_at: dt.datetime,
     timeframe: Timeframe,
-    tickers: tp.Optional[tp.List[Ticker]] = None,  # if None -> load every available asset from DB
+    tickers: tp.Optional[tp.List[Ticker]] = None,
 ):
-    market_feed = BacktestingMarketFeed(
-        start_at=start_at,
-        end_at=end_at,
-        timeframe=timeframe,
-        tickers=tickers,
-    )
-    dispatcher = StrategyDispatcher(
-        strategy=strategy,
-        tickers=tickers,
-        workers_n=WORKER_PROCESSES_NUM,
-    )
-
-    logger.info('Backtesting started')
-
-    elapsed = time.time()
-    await run_trading_system(
-        market_feed=market_feed,
-        dispatcher=dispatcher,
-    )
-    logger.info('Backtesting complete in %.2fs.', time.time() - elapsed)
-
-
-async def main():
     await db.init()
-    await backtest(
-        strategy=None,
-        start_at=dt.datetime(2021, 9, 1, tzinfo=settings.TIMEZONE),
-        end_at=dt.datetime(2022, 2, 13, tzinfo=settings.TIMEZONE),
-        timeframe=Timeframe.H1,
-        tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT'],
-    )
+
+    candles_feed = CandlesFeed(start_at, end_at, timeframe, tickers)
+    manager = Manager(strategy, tickers)
+    await run_trading_system(candles_feed, manager)
+
     await db.close()
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    asyncio.run(
+        backtest(
+            strategy=None,
+            start_at=dt.datetime(2021, 9, 1, tzinfo=settings.TIMEZONE),
+            end_at=dt.datetime(2022, 2, 13, tzinfo=settings.TIMEZONE),
+            timeframe=Timeframe.H1,
+            tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT'],
+        )
+    )

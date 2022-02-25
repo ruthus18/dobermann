@@ -11,11 +11,3 @@ services:
       POSTGRES_PASSWORD: 'dobermann'
     volumes:
       - /Volumes/Finance/postgres-data:/var/lib/postgresql/data
-
-  redis:
-    image: bitnami/redis:6.2
-    ports:
-      - 6379:6379
-    environment:
-      REDIS_USERNAME: 'dobermann'
-      REDIS_PASSWORD: 'dobermann'

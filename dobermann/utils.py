@@ -1,7 +1,7 @@
 import asyncio
+import itertools
 import enum
 import typing as tp
-from contextlib import asynccontextmanager
 from decimal import Decimal
 
 OptDecimal = tp.Optional[Decimal]
@@ -17,7 +17,6 @@ class StrEnum(str, enum.Enum):
         return self.value
 
 
-@asynccontextmanager
 async def cancel_task(task: asyncio.Task):
     task.cancel()
     try:
@@ -25,4 +24,14 @@ async def cancel_task(task: asyncio.Task):
     except asyncio.CancelledError:
         pass
 
-    yield
+
+def split_list_round_robin(data: list, chunks_num: int):
+    """Divide list into n parts"""
+    result = [[] for _ in range(chunks_num)]
+
+    chunk_indexes = itertools.cycle(i for i in range(chunks_num))
+    for item in data:
+        i = next(chunk_indexes)
+        result[i].append(item)
+
+    return result

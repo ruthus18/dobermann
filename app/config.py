@@ -76,6 +76,9 @@ class Settings(BaseSettings):
                     'handlers': ['stdout'],
                     'level': values['LOGGING_LEVEL'],
                 },
+                'asyncio': {
+                    'level': logging.ERROR,
+                },
                 'tortoise': {
                     'level': logging.ERROR,
                 },
