@@ -11,7 +11,7 @@ from .binance_client import Candle
 from .utils import OptDecimal, RoundedDecimal
 
 
-CACHE_SERIES = True
+CACHE_SERIES = False
 
 
 class EMA:
@@ -29,7 +29,7 @@ class EMA:
     def calculate(self, time: dt.datetime, value: Decimal) -> tp.Optional[Decimal]:
         if len(self.s_data) < self.size:
             self.s_data[time] = value
-            return
+            return None
 
         elif len(self.s) == 0:
             current_ema = RoundedDecimal(self.s_data.tail(self.size).mean())
@@ -40,6 +40,7 @@ class EMA:
 
         if not CACHE_SERIES:
             self.s = self.s[-1:]
+
         return current_ema
 
 

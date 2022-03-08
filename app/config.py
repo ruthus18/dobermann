@@ -85,6 +85,9 @@ class Settings(BaseSettings):
                 'apscheduler.executors': {
                     'level': logging.ERROR,
                 },
+                'parso': {
+                    'level': logging.INFO,
+                }
             },
         })
 

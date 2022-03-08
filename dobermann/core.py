@@ -2,9 +2,15 @@ import asyncio
 import datetime as dt
 import logging.config
 import typing as tp
+import uuid
+from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
+from copy import deepcopy
+from dataclasses import dataclass
+from decimal import Decimal
 
+import pandas as pd
 import simplejson as json
 import zmq
 from tortoise.queryset import QuerySet
@@ -13,7 +19,8 @@ from zmq.asyncio import Context
 from app import db, models
 from app.config import settings
 
-from .base import Strategy, Ticker, Timeframe
+from . import indicators
+from .base import Ticker, Timeframe
 from .utils import cancel_task, split_list_round_robin
 
 logging.config.dictConfig(settings.LOGGING)
@@ -22,101 +29,31 @@ logger = logging.getLogger('core')
 
 WORKERS_POOL_SIZE = 12
 
-MANAGER_URL = 'tcp://127.0.0.1:4503'
-FEED_URL = 'tcp://127.0.0.1:4504'
+MANAGER_URL = 'tcp://127.0.0.1:4444'
+FEED_URL = 'tcp://127.0.0.1:4445'
+EXCHANGE_URL = 'tcp://127.0.0.1:4446'
 
 
-class Worker:
-
-    def __init__(self, w_id: int, tickers: tp.List[Ticker]):
-        self.w_id = w_id
-        self.tickers = tickers
-
-        self.log = logger.getChild(f'worker[{w_id}]')
-
-    async def run(self):
-        self.log.debug('Worker started')
-
-        _zmq_ctx = Context.instance()
-        sock = _zmq_ctx.socket(zmq.SUB)
-        sock.connect(FEED_URL)
-        sock.connect(MANAGER_URL)
-
-        for ticker in self.tickers:
-            sock.setsockopt_string(zmq.SUBSCRIBE, ticker)
-            self.log.debug('Subscribed to candle %s', ticker)
-
-        sock.setsockopt_string(zmq.SUBSCRIBE, '0')  # shutdown event
-
-        self.log.debug('Waiting events...')
-        while True:
-            msg = await sock.recv_string()
-            # self.log.debug('Got event: %s', msg)
-
-            if msg == '0':
-                sock.close()
-                self.log.debug('Worker stopped')
-                return
-
-            ticker, candle = msg.split(';')
+SignalType = tp.TypeVar('SignalType')
 
 
-def spawn_worker(w_id: int, tickers: list):
-    worker = Worker(w_id, tickers)
-    try:
-        asyncio.run(worker.run())
-    except (KeyboardInterrupt, SystemExit):
-        worker.log.debug('Force shutdown worker...')
-
-
-class Manager:
-
-    def __init__(self, strategy: Strategy, tickers: tp.List[Ticker]):
-        super().__init__()
-
-        self.strategy = strategy
-        self.tickers = tickers
-
-        self.log = logger.getChild('manager')
-
-    async def run(self):
-        self.log.debug('Manager started')
-
-        _zmq_ctx = Context.instance()
-        manager_sock = _zmq_ctx.socket(zmq.PUB)
-        manager_sock.bind(MANAGER_URL)
-
-        pool_size = min(WORKERS_POOL_SIZE, len(self.tickers))
-        tickers_splitted = split_list_round_robin(self.tickers, pool_size)
-
-        loop = asyncio.get_event_loop()
-        pool = ProcessPoolExecutor(max_workers=WORKERS_POOL_SIZE)
-
-        with suppress(asyncio.CancelledError):
-            tasks = [
-                loop.run_in_executor(
-                    pool, spawn_worker, w_id, tickers_splitted[w_id]
-                )
-                for w_id in range(pool_size)
-            ]
-
-            await asyncio.sleep(float('inf'))  # wait cancellation
-
-        self.log.debug('Shutdown workers...')
-        await manager_sock.send_string('0')
-
-        await asyncio.wait(tasks)
-        pool.shutdown(wait=True)
-
-        self.log.debug('Manager stopped')
+@dataclass
+class Candle:
+    open_time: dt.datetime
+    close_time: dt.datetime
+    open: Decimal
+    close: Decimal
+    low: Decimal
+    high: Decimal
+    volume: Decimal
 
 
 def candle_to_json(obj: models.Candle) -> str:
     return json.dumps(
         dict(
-            ticker=obj.asset.ticker,
-            timeframe=obj.timeframe,
             open_time=obj.open_time,
+            close_time=obj.close_time,
+            volume=obj.volume,
             open=obj.open,
             close=obj.close,
             low=obj.low,
@@ -124,6 +61,70 @@ def candle_to_json(obj: models.Candle) -> str:
         ),
         default=str,
     )
+
+
+def candle_from_json(data: str) -> Candle:
+    return Candle(**json.loads(data))
+
+
+class Strategy(ABC):
+
+    def __init__(self):
+        self.ticker: tp.Optional[Ticker] = None
+        self.exchange_sock: tp.Optional[zmq.Socket] = None
+
+        self.candle: tp.Optional[dict] = None
+        self.position_id: tp.Optional[str] = None
+
+        self.signals: tp.Dict[dt.datetime: SignalType] = {}
+        
+
+    def _init_worker(self, ticker: Ticker, exchange_sock: zmq.Socket):
+        self.ticker = ticker
+        self._exchange_sock = exchange_sock
+
+    # TODO: Стратегия не должна хранить в себе логику работы с биржей, этим должен заниматься Worker (ExchangeClient)
+    async def open_position(self):
+        if self.position_id is not None:
+            raise RuntimeError('Position already open')
+
+        self.position_id = uuid.uuid4().hex
+
+        await self.exchange_sock.send_json({
+            'type': 'open',
+            'position_id': self.position_id,
+            'ticker': self.ticker,
+            'time': self.candle.open_time,
+            'price': self.candle.close,
+        })
+
+    async def close_position(self):
+        if self.position_id is None:
+            raise RuntimeError('Position not open')
+
+        await self.exchange_sock.send_json({
+            'type': 'close',
+            'position_id': self.position_id,
+            'time': self.candle.open_time,
+            'price': self.candle.price,
+        })
+        self.position_id = None
+
+    async def on_candle(self, candle: Candle):
+        self.candle = candle
+        signal = await self.calculate()
+        self.signals[candle.close_time] = signal
+
+    @abstractmethod
+    async def calculate(self) -> SignalType: ...
+
+
+class TestStrategy(Strategy):
+    def __init__(self):
+        super().__init__()
+
+    async def calculate(self) -> SignalType:
+        return await super().calculate()
 
 
 class CandlesFeed:
@@ -190,6 +191,107 @@ class CandlesFeed:
         self.log.debug('Candles feed stopped')
 
 
+class Manager:
+
+    def __init__(self, strategy: Strategy, tickers: tp.List[Ticker]):
+        super().__init__()
+
+        self.strategy = strategy
+        self.tickers = tickers
+
+        self.log = logger.getChild('manager')
+
+    async def run(self):
+        self.log.debug('Manager started')
+
+        _zmq_ctx = Context.instance()
+        manager_sock = _zmq_ctx.socket(zmq.PUB)
+        manager_sock.bind(MANAGER_URL)
+
+        pool_size = min(WORKERS_POOL_SIZE, len(self.tickers))
+        tickers_splitted = split_list_round_robin(self.tickers, pool_size)
+
+        loop = asyncio.get_event_loop()
+        pool = ProcessPoolExecutor(max_workers=WORKERS_POOL_SIZE)
+
+        with suppress(asyncio.CancelledError):
+            tasks = [
+                loop.run_in_executor(
+                    pool, spawn_worker, w_id, self.strategy, tickers_splitted[w_id],
+                )
+                for w_id in range(pool_size)
+            ]
+
+            await asyncio.sleep(float('inf'))  # wait cancellation
+
+        self.log.debug('Shutdown workers...')
+        await manager_sock.send_string('0')
+
+        await asyncio.wait(tasks)
+        pool.shutdown(wait=True)
+
+        self.log.debug('Manager stopped')
+
+
+def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
+    worker = Worker(w_id, strategy, tickers)
+    try:
+        asyncio.run(worker.run())
+    except (KeyboardInterrupt, SystemExit):
+        worker.log.debug('Force shutdown worker...')
+
+
+class Worker:
+
+    def __init__(self, w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
+        self.w_id = w_id
+        self.tickers = tickers
+
+        self.log = logger.getChild(f'worker[{w_id}]')
+
+        self._strategy = strategy
+        self.strategies: tp.Dict[Ticker, Strategy] = {}
+
+    async def run(self):
+        self.log.debug('Worker started')
+
+        _zmq_ctx = Context.instance()
+        sock = _zmq_ctx.socket(zmq.SUB)
+        sock.connect(FEED_URL)
+        sock.connect(MANAGER_URL)
+
+        exchange_sock = _zmq_ctx.socket(zmq.PUSH)
+        exchange_sock.connect(EXCHANGE_URL)
+
+        for ticker in self.tickers:
+            sock.setsockopt_string(zmq.SUBSCRIBE, ticker)
+
+            strategy = deepcopy(self._strategy)
+            strategy._init_worker(ticker, exchange_sock)
+
+            self.strategies[ticker] = strategy
+            self.log.debug('Subscribed to candle %s', ticker)
+
+        sock.setsockopt_string(zmq.SUBSCRIBE, '0')  # shutdown event
+
+        self.log.debug('Waiting events...')
+        while True:
+            msg = await sock.recv_string()
+            self.log.debug('Got event: %s', msg)
+
+            if msg == '0':
+                sock.close()
+                self.log.debug('Worker stopped')
+                break
+
+            ticker, candle_data = msg.split(';')
+
+            strategy = self.strategies[ticker]
+            await strategy.on_candle(candle_from_json(candle_data))
+
+        # TODO: Сохранение сигналов из стратегии в БД
+
+
 async def run_trading_system(
     candles_feed: CandlesFeed,
     manager: Manager,
@@ -234,7 +336,7 @@ async def backtest(
 if __name__ == '__main__':
     asyncio.run(
         backtest(
-            strategy=None,
+            strategy=TestStrategy(),
             start_at=dt.datetime(2021, 9, 1, tzinfo=settings.TIMEZONE),
             end_at=dt.datetime(2022, 2, 13, tzinfo=settings.TIMEZONE),
             timeframe=Timeframe.H1,
