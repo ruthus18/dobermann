@@ -36,9 +36,12 @@ TODO:
 
 WORKERS_POOL_SIZE = 12
 
-FEED_URL = 'tcp://127.0.0.1:4444'
-WORKERS_CTRL_URL = 'tcp://127.0.0.1:4445'
-EXCHANGE_URL = 'tcp://127.0.0.1:4446'
+_ADDR = 'tcp://127.0.0.1:{port}'
+
+CANDLES_URL = _ADDR.format(port='4444')
+FEED_REGISTRATOR_URL = _ADDR.format(port='4445')
+WORKERS_CTRL_URL = _ADDR.format(port='4446')
+EXCHANGE_URL = _ADDR.format(port='4447')
 
 
 SignalType = tp.TypeVar('SignalType')
@@ -144,19 +147,34 @@ class CandlesFeed:
         start_at: dt.datetime,
         end_at: dt.datetime,
         timeframe: Timeframe,
-        tickers: tp.Optional[tp.List[Ticker]] = None,
+        tickers: tp.List[Ticker],
+        pool_size: int,
     ):
         super().__init__()
 
         self.start_at = start_at
         self.end_at = end_at
         self.timeframe = timeframe
-        self.tickers: tp.Iterable[Ticker] = tickers or []  # FIXME: Сразу принимать на вход queryset с asset-ами
+        self.tickers: tp.Iterable[Ticker] = tickers  # FIXME: Сразу принимать на вход queryset с asset-ами
+        self.pool_size = pool_size
+
+        self.log = logger.getChild('feed')
 
         self.assets: QuerySet[models.Asset]
         self.candles_iter: tp.Awaitable[QuerySet[models.Candle]]
 
-        self.log = logger.getChild('feed')
+        self._zmq_ctx: zmq.Context
+        self.candles_sender: zmq.Socket
+        self.init_zmq()
+
+    def init_zmq(self):
+        self._zmq_ctx = Context.instance()
+
+        self.candles_sender = self._zmq_ctx.socket(zmq.PUB)
+        self.candles_sender.bind(CANDLES_URL)
+
+    def close_zmq(self):
+        self.candles_sender.close()
 
     async def _get_assets_from_db(self) -> QuerySet[models.Asset]:
         filter_kwargs = {
@@ -167,7 +185,7 @@ class CandlesFeed:
 
         return await models.Asset.filter(**filter_kwargs)
 
-    async def _prepare_data(self):
+    async def prepare_data(self):
         self.assets = await self._get_assets_from_db()
         self.log.debug('Assets loaded: %s', len(self.assets))
 
@@ -180,35 +198,59 @@ class CandlesFeed:
 
         self.log.debug('Total candles: %s', await self.candles_iter.count())
 
-    async def run(self):
-        _zmq_ctx = Context.instance()
-        feed_sock: zmq.Socket = _zmq_ctx.socket(zmq.PUB)
-        feed_sock.bind(FEED_URL)
+    async def wait_actors(self):
+        registrator = self._zmq_ctx.socket(zmq.REP)
+        registrator.bind(FEED_REGISTRATOR_URL)
 
+        workers_remaining = self.pool_size
+        exchange_ready = False
+
+        self.log.debug('Waiting workers and exchange to init...')
+
+        while workers_remaining or not exchange_ready:
+    
+            actor_type, data = await registrator.recv_multipart()
+
+            if actor_type == b'reg_worker':
+                workers_remaining -= 1
+                self.log.info('WORKER REGISTERED, REMAINING = %s', workers_remaining)
+
+                await registrator.send_multipart((b'reg_worker', b'42'))
+
+            elif actor_type == b'reg_exchange':
+                self.log.info('EXCHANGE REGISTERED')
+                exchange_ready = True
+
+                await registrator.send_multipart((b'reg_exchange', b'3'))
+
+        registrator.close()
+
+    async def run(self):
         self.log.debug('Candles feed started')
 
         with suppress(asyncio.CancelledError):
-            await self._prepare_data()
-            await asyncio.sleep(3)  # TODO: workers handshake
+            await self.prepare_data()
+            await self.wait_actors()
 
             self.log.debug('Sending candles to workers...')
             async for candle in self.candles_iter:
-                await feed_sock.send_multipart((candle.asset.ticker.encode(), candle_to_json(candle)))
+                await self.candles_sender.send_multipart((candle.asset.ticker.encode(), candle_to_json(candle)))
 
             self.log.debug('Finish sending candles')
             await asyncio.sleep(float('inf'))  # wait cancellation
 
-        feed_sock.close()
+        self.close_zmq()
         self.log.debug('Candles feed stopped')
 
 
 class Manager:
 
-    def __init__(self, strategy: Strategy, tickers: tp.List[Ticker]):
+    def __init__(self, strategy: Strategy, tickers: tp.List[Ticker], pool_size: int):
         super().__init__()
 
         self.strategy = strategy
         self.tickers = tickers
+        self.pool_size = pool_size
 
         self.log = logger.getChild('manager')
 
@@ -219,8 +261,7 @@ class Manager:
         workers_sock = _zmq_ctx.socket(zmq.PUB)
         workers_sock.bind(WORKERS_CTRL_URL)
 
-        pool_size = min(WORKERS_POOL_SIZE, len(self.tickers))
-        tickers_splitted = split_list_round_robin(self.tickers, pool_size)
+        tickers_splitted = split_list_round_robin(self.tickers, self.pool_size)
 
         loop = asyncio.get_event_loop()
         pool = ProcessPoolExecutor(max_workers=WORKERS_POOL_SIZE)
@@ -230,7 +271,7 @@ class Manager:
                 loop.run_in_executor(
                     pool, spawn_worker, w_id, self.strategy, tickers_splitted[w_id],
                 )
-                for w_id in range(pool_size)
+                for w_id in range(self.pool_size)
             ]
 
             await asyncio.sleep(float('inf'))  # wait cancellation
@@ -264,12 +305,6 @@ def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
         worker.log.debug('Worker stopped')
 
 
-# FIXME: Нужно переделать формат входящих событий и вынести сообщения в отдельный объект (CandleEvent):
-#        <ticker>;<action>;<data>
-#        ------------------------
-#        BTCUSDT;last_open_at;2022-03-10T06:20:56.915248
-#        ETHUSDT;candle;{...}
-#
 # TODO: Сохранение сигналов стратегий (передавать через сокет в менеджер, который будет писать в csv)
 class Worker:
 
@@ -281,9 +316,11 @@ class Worker:
 
         self._strategy = strategy
         self.strategies: tp.Dict[Ticker, Strategy] = {}
+        self.remaining_candles: tp.Dict[Ticker, Strategy] = {}
 
         self._zmq_ctx: zmq.Context
         self.poller: zmq.Poller
+        self.registrator: zmq.Socket
         self.candle_receiver: zmq.Socket
         self.controller: zmq.Socket
         self.exchange_sender: zmq.Socket
@@ -293,7 +330,7 @@ class Worker:
         self._zmq_ctx = Context.instance()
 
         self.candle_receiver = self._zmq_ctx.socket(zmq.SUB)
-        self.candle_receiver.connect(FEED_URL)
+        self.candle_receiver.connect(CANDLES_URL)
 
         for ticker in self.tickers:
             self.candle_receiver.subscribe(ticker)
@@ -316,12 +353,25 @@ class Worker:
         self.exchange_sender.close()
         self._zmq_ctx.term()
 
+    async def register(self):
+        registrator = self._zmq_ctx.socket(zmq.REQ)
+        registrator.connect(FEED_REGISTRATOR_URL)
+
+        await registrator.send_multipart((b'reg_worker', json.dumps(self.tickers).encode()))
+        _, remaining = await registrator.recv_multipart()
+
+        self.log.debug('Registered! Remaining candles: %s', remaining)
+
+        registrator.close()
+
     async def run(self):
         for ticker in self.tickers:
             strategy = deepcopy(self._strategy)
             strategy._init_worker(ticker, self.exchange_sender)
 
             self.strategies[ticker] = strategy
+
+        await self.register()
 
         self.log.debug('Waiting events...')
         while True:
@@ -350,15 +400,29 @@ class Exchange:
 
     def __init__(self):
         self.log = logger.getChild('exchange')
+        self._zmq_ctx = Context.instance()
+
+    async def register(self):
+        registrator = self._zmq_ctx.socket(zmq.REQ)
+        registrator.connect(FEED_REGISTRATOR_URL)        
+
+        await registrator.send_multipart((b'reg_exchange', b''))
+        _, remaining = await registrator.recv_multipart()
+
+        self.log.info('REGISTERED! REMAINING TICKERS: %s', remaining)
+
+        registrator.close()
 
     async def run(self):
         self.log.debug('Exchange started')
 
-        _zmq_ctx = Context.instance()
-        exchange_sock = _zmq_ctx.socket(zmq.PULL)
+        exchange_sock = self._zmq_ctx.socket(zmq.PULL)
         exchange_sock.bind(EXCHANGE_URL)
 
         with suppress(asyncio.CancelledError):
+            await self.register()
+
+            self.log.debug('Waiting events...')
             while True:
                 msg = await exchange_sock.recv_json()
                 logger.info('Got event: (%s)%s', type(msg), msg)
@@ -402,7 +466,7 @@ async def backtest(
     start_at: dt.datetime,
     end_at: dt.datetime,
     timeframe: Timeframe,
-    tickers: tp.Optional[tp.List[Ticker]] = None,
+    tickers: tp.Optional[tp.List[Ticker]],
 ):
     await db.init()
 
@@ -412,8 +476,10 @@ async def backtest(
     if not end_at.tzinfo:
         end_at = end_at.astimezone(settings.TIMEZONE)
 
-    candles_feed = CandlesFeed(start_at, end_at, timeframe, tickers)
-    manager = Manager(strategy, tickers)
+    pool_size = min(WORKERS_POOL_SIZE, len(tickers))
+
+    candles_feed = CandlesFeed(start_at, end_at, timeframe, tickers, pool_size)
+    manager = Manager(strategy, tickers, pool_size)
     exchange = Exchange()
     await run_trading_system(candles_feed, manager, exchange)
 
