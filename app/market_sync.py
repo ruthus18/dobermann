@@ -1,8 +1,9 @@
 import asyncio
 import datetime as dt
-import logging
+import logging.config
 import typing as tp
 from functools import partial
+from .config import settings
 
 from tortoise import timezone as tz
 from tqdm import tqdm
@@ -15,7 +16,8 @@ from . import db, models, scheduler
 if tp.TYPE_CHECKING:
     from dobermann import FuturesAsset
 
-logger = logging.getLogger(__name__)
+logging.config.dictConfig(settings.LOGGING)
+logger = logging.getLogger('sync')
 
 
 # TODO: update asset status
@@ -181,3 +183,17 @@ async def update_historical_candles(timeframe: Timeframe = Timeframe.D1):
     # asyncio.run(scheduler.run_scheduler())
 
 # </DRAFT>
+
+
+async def main():
+    await db.init()
+    logger.info('Updating 1H candles...')
+    await update_historical_candles(Timeframe.H1)
+
+    logger.info('Updating 1H candles...')
+    await update_historical_candles(Timeframe.M5)
+    await db.close()
+
+
+if __name__ == '__main__':
+    asyncio.run(main())

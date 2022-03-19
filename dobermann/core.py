@@ -36,8 +36,8 @@ TODO:
 
 WORKERS_POOL_SIZE = 12
 
-WORKERS_URL = 'tcp://127.0.0.1:4444'
-FEED_URL = 'tcp://127.0.0.1:4445'
+FEED_URL = 'tcp://127.0.0.1:4444'
+WORKERS_CTRL_URL = 'tcp://127.0.0.1:4445'
 EXCHANGE_URL = 'tcp://127.0.0.1:4446'
 
 
@@ -67,11 +67,11 @@ def candle_to_json(obj: models.Candle) -> str:
             high=obj.high,
         ),
         default=str,
-    )
+    ).encode()
 
 
-def candle_from_json(data: str) -> Candle:
-    return Candle(**json.loads(data))
+def candle_from_json(data: bytes) -> Candle:
+    return Candle(**json.loads(data.decode()))
 
 
 class StrategyLogicalError(Exception): ...
@@ -150,15 +150,15 @@ class CandlesFeed:
 
         self.start_at = start_at
         self.end_at = end_at
-
-        self.tickers: tp.Iterable[Ticker] = tickers
-        self.assets: QuerySet[models.Asset]
-
         self.timeframe = timeframe
+        self.tickers: tp.Iterable[Ticker] = tickers or []  # FIXME: Сразу принимать на вход queryset с asset-ами
+
+        self.assets: QuerySet[models.Asset]
+        self.candles_iter: tp.Awaitable[QuerySet[models.Candle]]
 
         self.log = logger.getChild('feed')
 
-    async def get_assets_from_db(self) -> QuerySet[models.Asset]:
+    async def _get_assets_from_db(self) -> QuerySet[models.Asset]:
         filter_kwargs = {
             'removed_at__isnull': True
         }
@@ -167,36 +167,33 @@ class CandlesFeed:
 
         return await models.Asset.filter(**filter_kwargs)
 
+    async def _prepare_data(self):
+        self.assets = await self._get_assets_from_db()
+        self.log.debug('Assets loaded: %s', len(self.assets))
+
+        self.candles_iter = models.Candle.filter(
+            asset_id__in=[a.id for a in self.assets],
+            timeframe=self.timeframe,
+            open_time__gte=self.start_at,
+            open_time__lt=self.end_at,
+        ).select_related('asset').order_by('open_time')
+
+        self.log.debug('Total candles: %s', await self.candles_iter.count())
+
     async def run(self):
         _zmq_ctx = Context.instance()
-        feed_sock = _zmq_ctx.socket(zmq.PUB)
+        feed_sock: zmq.Socket = _zmq_ctx.socket(zmq.PUB)
         feed_sock.bind(FEED_URL)
 
         self.log.debug('Candles feed started')
 
         with suppress(asyncio.CancelledError):
-
-            self.assets = await self.get_assets_from_db()
-            self.log.debug('Assets loaded: %s', len(self.assets))
-
-            candles_iter = models.Candle.filter(
-                asset__ticker__in=[a.ticker for a in self.assets],
-                timeframe=self.timeframe,
-                open_time__gte=self.start_at,
-                open_time__lt=self.end_at,
-            ).select_related('asset').order_by('open_time')
+            await self._prepare_data()
+            await asyncio.sleep(3)  # TODO: workers handshake
 
             self.log.debug('Sending candles to workers...')
-            self.log.debug('Total candles: %s', await candles_iter.count())
-
-            await asyncio.sleep(3)  # TODO: Убрать это говнище
-
-            await feed_sock.send_string(f'last_at;{self.end_at.isoformat()}')
-
-            async for candle in candles_iter:
-                json_msg = candle_to_json(candle)
-
-                await feed_sock.send_string(f'{candle.asset.ticker};{json_msg}')
+            async for candle in self.candles_iter:
+                await feed_sock.send_multipart((candle.asset.ticker.encode(), candle_to_json(candle)))
 
             self.log.debug('Finish sending candles')
             await asyncio.sleep(float('inf'))  # wait cancellation
@@ -220,7 +217,7 @@ class Manager:
 
         _zmq_ctx = Context.instance()
         workers_sock = _zmq_ctx.socket(zmq.PUB)
-        workers_sock.bind(WORKERS_URL)
+        workers_sock.bind(WORKERS_CTRL_URL)
 
         pool_size = min(WORKERS_POOL_SIZE, len(self.tickers))
         tickers_splitted = split_list_round_robin(self.tickers, pool_size)
@@ -239,7 +236,7 @@ class Manager:
             await asyncio.sleep(float('inf'))  # wait cancellation
 
         self.log.debug('Shutdown workers...')
-        await workers_sock.send_string('0')
+        await workers_sock.send_string('exit')
 
         await asyncio.wait(tasks)
         pool.shutdown(wait=True)
@@ -249,6 +246,8 @@ class Manager:
 
 def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
     worker = Worker(w_id, strategy, tickers)
+
+    worker.log.debug('Worker started')
     try:
         asyncio.run(worker.run())
 
@@ -257,10 +256,12 @@ def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
 
     except Exception as e:
         worker.log.exception(
-            'Exception occured while processing candles: (%s) %s',
-            e.__class__.__name__,
-            e,
+            'Exception occured while processing candles: (%s) %s', e.__class__.__name__, e
         )
+
+    finally:
+        worker.close_zmq()
+        worker.log.debug('Worker stopped')
 
 
 # FIXME: Нужно переделать формат входящих событий и вынести сообщения в отдельный объект (CandleEvent):
@@ -268,6 +269,8 @@ def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
 #        ------------------------
 #        BTCUSDT;last_open_at;2022-03-10T06:20:56.915248
 #        ETHUSDT;candle;{...}
+#
+# TODO: Сохранение сигналов стратегий (передавать через сокет в менеджер, который будет писать в csv)
 class Worker:
 
     def __init__(self, w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
@@ -278,62 +281,69 @@ class Worker:
 
         self._strategy = strategy
         self.strategies: tp.Dict[Ticker, Strategy] = {}
-        self.last_at: tp.Optional[dt.datetime] = None
 
-    async def run(self):
-        self.log.debug('Worker started')
+        self._zmq_ctx: zmq.Context
+        self.poller: zmq.Poller
+        self.candle_receiver: zmq.Socket
+        self.controller: zmq.Socket
+        self.exchange_sender: zmq.Socket
+        self.init_zmq()
 
-        _zmq_ctx = Context.instance()
-        listener_sock = _zmq_ctx.socket(zmq.SUB)
-        listener_sock.connect(FEED_URL)
-        listener_sock.connect(WORKERS_URL)
+    def init_zmq(self):
+        self._zmq_ctx = Context.instance()
 
-        exchange_sock = _zmq_ctx.socket(zmq.PUSH)
-        exchange_sock.connect(EXCHANGE_URL)
+        self.candle_receiver = self._zmq_ctx.socket(zmq.SUB)
+        self.candle_receiver.connect(FEED_URL)
 
         for ticker in self.tickers:
-            listener_sock.setsockopt_string(zmq.SUBSCRIBE, ticker)
-
-            strategy = deepcopy(self._strategy)
-            strategy._init_worker(ticker, exchange_sock)
-
-            self.strategies[ticker] = strategy
+            self.candle_receiver.subscribe(ticker)
             self.log.debug('Subscribed to candle %s', ticker)
 
-        listener_sock.setsockopt_string(zmq.SUBSCRIBE, '0')  # shutdown event
-        listener_sock.setsockopt_string(zmq.SUBSCRIBE, 'last_at')  # last time register event
+        self.controller = self._zmq_ctx.socket(zmq.SUB)
+        self.controller.connect(WORKERS_CTRL_URL)
+        self.controller.subscribe('')
+
+        self.exchange_sender = self._zmq_ctx.socket(zmq.PUSH)
+        self.exchange_sender.connect(EXCHANGE_URL)
+
+        self.poller = zmq.Poller()
+        self.poller.register(self.candle_receiver, zmq.POLLIN)
+        self.poller.register(self.controller, zmq.POLLIN)
+
+    def close_zmq(self):
+        self.candle_receiver.close()
+        self.controller.close()
+        self.exchange_sender.close()
+        self._zmq_ctx.term()
+
+    async def run(self):
+        for ticker in self.tickers:
+            strategy = deepcopy(self._strategy)
+            strategy._init_worker(ticker, self.exchange_sender)
+
+            self.strategies[ticker] = strategy
 
         self.log.debug('Waiting events...')
         while True:
-            msg = await listener_sock.recv_string()
-            self.log.debug('Got event: %s', msg)
+            sockets = dict(self.poller.poll())
 
-            if msg == '0':
+            if sockets.get(self.candle_receiver) == zmq.POLLIN:
+                ticker, candle_data = await self.candle_receiver.recv_multipart()
+
+                ticker = ticker.decode()
+                candle = candle_from_json(candle_data)
+
+                self.log.debug('Received candle %s: %s', ticker, candle)
+
+                # TODO: check integrity errors in time series
+                strategy = self.strategies[ticker]
+                await strategy.on_candle(candle)
+
+            if sockets.get(self.controller) == zmq.POLLIN:
+                await self.controller.recv_string()
+
+                self.log.debug('Received exit event')
                 break
-
-            elif 'last_at' in msg:
-                _, last_at = msg.split(';')
-                self.last_at = dt.datetime.fromisoformat(last_at)
-                self.log.debug('Register last date: %s', last_at)
-                continue
-
-            ticker, candle_data = msg.split(';')
-
-            strategy = self.strategies[ticker]
-            candle = candle_from_json(candle_data)
-
-            # TODO: check integrity errors in time series
-            await strategy.on_candle(candle)
-
-            if self.last_at and dt.datetime.fromisoformat(candle.close_time) > self.last_at:  # FIXME
-                self.log.debug('Handle all candles, exit...')
-                break
-
-        listener_sock.close()
-        exchange_sock.close()
-
-        self.log.debug('Worker stopped')
-        # TODO: Сохранение сигналов стратегий (передавать через сокет в менеджер, который будет писать в csv)
 
 
 class Exchange:
@@ -371,7 +381,7 @@ async def run_trading_system(
 
     try:
         await asyncio.wait(
-            [t_manager, t_feed, t_exchange],
+            (t_manager, t_feed, t_exchange),
             return_when=asyncio.FIRST_COMPLETED
         )
     except (KeyboardInterrupt, SystemExit):
@@ -414,9 +424,9 @@ if __name__ == '__main__':
     asyncio.run(
         backtest(
             strategy=TestStrategy(),
-            start_at=dt.datetime(2021, 9, 1),
-            end_at=dt.datetime(2021, 9, 2),
+            start_at=dt.datetime(2022, 2, 1),
+            end_at=dt.datetime(2022, 2, 3),
             timeframe=Timeframe.H1,
-            tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT'],
+            tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT', 'NEARUSDT'],
         )
     )
