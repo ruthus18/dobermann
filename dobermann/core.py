@@ -25,21 +25,17 @@ logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')
 
 
-"""
-TODO:
-* Механизм синхронизации между market feed и worker-ами (см. "slow joiner" синдром в ZMQ)
-* Механизм завершения тестирования (доделать прототип через передачу последней даты свечи в worker-ы)
-"""
-
-
 WORKERS_POOL_SIZE = 12
 
-_ADDR = 'tcp://127.0.0.1:{port}'
+_ZMQ_URL = 'tcp://127.0.0.1:{port}'
 
-CANDLES_URL = _ADDR.format(port='4444')
-FEED_REGISTRATOR_URL = _ADDR.format(port='4445')
-WORKERS_CTRL_URL = _ADDR.format(port='4446')
-EXCHANGE_URL = _ADDR.format(port='4447')
+# Business logic data flow
+CANDLES_URL = _ZMQ_URL.format(port=4444)
+EXCHANGE_URL = _ZMQ_URL.format(port=4445)
+
+# Infrastructure data flow
+FEED_REGISTRATOR_URL = _ZMQ_URL.format(port=4446)
+WORKERS_CTRL_URL = _ZMQ_URL.format(port=4447)
 
 
 SignalType = tp.TypeVar('SignalType')
@@ -78,11 +74,36 @@ def candle_from_json(data: bytes) -> Candle:
 class StrategyLogicalError(Exception): ...
 
 
+class ExchangeClient:
+
+    def __init__(self, zmq_ctx: zmq.Context):
+        self.zmq_ctx = zmq_ctx
+
+        self.sender: zmq.Socket = self.zmq_ctx.socket(zmq.PUSH)
+        self.connected = False
+
+    async def notify_event(self, event_name: str, event_data: dict):
+        if not self.connected:
+            self.sender.connect(EXCHANGE_URL)
+
+        await self.sender.send_multipart(event_name.encode(), json.dumps(event_data).encode())
+
+    def close(self):
+        if self.connected:
+            self.sender.close()
+
+    async def open_position(self, data: dict):
+        await self.notify_event('open_position', data)
+
+    async def close_position(self, data: dict):
+        await self.notify_event('close_position', data)
+
+
 class Strategy(ABC):
 
     def __init__(self):
         self.ticker: tp.Optional[Ticker] = None
-        self.exchange_sock: tp.Optional[zmq.Socket] = None
+        self.exchange: tp.Optional[ExchangeClient] = None
 
         self.candle: tp.Optional[dict] = None
         self.position_id: tp.Optional[str] = None
@@ -90,18 +111,17 @@ class Strategy(ABC):
         self.signals: tp.Dict[dt.datetime: SignalType] = {}
         
 
-    def _init_worker(self, ticker: Ticker, exchange_sock: zmq.Socket):
+    def _init_worker(self, ticker: Ticker, exchange_client: ExchangeClient):
         self.ticker = ticker
-        self._exchange_sock = exchange_sock
+        self.exchange = exchange_client
 
-    # TODO: Стратегия не должна хранить в себе логику работы с биржей, этим должен заниматься Worker (ExchangeClient)
     async def open_position(self):
         if self.position_id:
             raise StrategyLogicalError('Position already open')
 
         self.position_id = uuid.uuid4().hex
 
-        await self.exchange_sock.send_json({
+        await self.exchange.open_position({
             'type': 'open',
             'position_id': self.position_id,
             'ticker': self.ticker,
@@ -113,7 +133,7 @@ class Strategy(ABC):
         if not self.position_id:
             raise StrategyLogicalError('Position was not open')
 
-        await self.exchange_sock.send_json({
+        await self.exchange.close_position({
             'type': 'close',
             'position_id': self.position_id,
             'time': self.candle.open_time,
@@ -158,8 +178,8 @@ class CandlesFeed:
 
         self.log = logger.getChild('feed')
 
-        self.assets: QuerySet[models.Asset]
-        self.candles_iter: tp.Awaitable[QuerySet[models.Candle]]
+        self._assets: QuerySet[models.Asset] = None
+        self._candles_iter: tp.Awaitable[QuerySet[models.Candle]] = None
 
         self._zmq_ctx: zmq.Context
         self.candles_sender: zmq.Socket
@@ -216,20 +236,23 @@ class CandlesFeed:
 
         while workers_remaining or not exchange_ready:
     
-            actor_type, data = await registrator.recv_multipart()
+            request_type, request_data = await registrator.recv_multipart()
+            request_type = request_type.decode()
 
-            if actor_type == b'reg_worker':
-                tickers = json.loads(data.decode())
-                candles_count = await self.get_candles_count(tickers)
+            if request_type == 'reg_worker':
+                tickers = json.loads(request_data.decode())
+                response_data = await self.get_candles_count(tickers)
 
-                await registrator.send_multipart((b'reg_worker', json.dumps(candles_count).encode()))
                 workers_remaining -= 1
 
-            elif actor_type == b'reg_exchange':
-                total_tickers = len(self.tickers)
-
-                await registrator.send_multipart((b'reg_exchange', str(total_tickers).encode()))
+            elif request_type == 'reg_exchange':
+                response_data = self.tickers
                 exchange_ready = True
+
+            else:
+                raise RuntimeError('Unknown request type while registering actors')
+
+            await registrator.send_multipart((request_type.encode(), json.dumps(response_data).encode()))
 
         self.log.debug('Workers and exchange registered')
         registrator.close()
@@ -395,7 +418,7 @@ class Worker:
                 ticker = ticker.decode()
                 candle = candle_from_json(candle_data)
 
-                self.log.debug('Received candle %s: %s', ticker, candle)
+                # self.log.debug('Received candle %s: %s', ticker, candle)
 
                 # TODO: check integrity errors in time series
                 strategy = self.strategies[ticker]
@@ -420,14 +443,17 @@ class Exchange:
         self.log = logger.getChild('exchange')
         self._zmq_ctx = Context.instance()
 
+        self.remaining_tickers: tp.List[Ticker]
+
     async def register(self):
         registrator = self._zmq_ctx.socket(zmq.REQ)
         registrator.connect(FEED_REGISTRATOR_URL)        
 
         await registrator.send_multipart((b'reg_exchange', b''))
-        _, remaining = await registrator.recv_multipart()
+        _, data = await registrator.recv_multipart()
+        self.remaining_tickers = json.loads(data.decode())
 
-        self.log.info('Registered! Total tickers: %s', remaining)
+        self.log.info('Registered! Total tickers: %s', len(self.remaining_tickers))
 
         registrator.close()
 
@@ -442,8 +468,8 @@ class Exchange:
 
             self.log.debug('Waiting events...')
             while True:
-                msg = await exchange_sock.recv_json()
-                logger.info('Got event: (%s)%s', type(msg), msg)
+                event_name, event_data = await exchange_sock.recv_multipart()
+                logger.info('Got event `%s`: %s', event_name, event_data)
 
                 ...  # TODO
 
@@ -463,7 +489,7 @@ async def run_trading_system(
 
     try:
         await asyncio.wait(
-            (t_manager, t_feed, t_exchange),
+            (t_exchange, ),
             return_when=asyncio.FIRST_COMPLETED
         )
     except (KeyboardInterrupt, SystemExit):

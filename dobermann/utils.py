@@ -1,4 +1,5 @@
 import asyncio
+from contextlib import suppress
 import itertools
 import enum
 import typing as tp
@@ -19,14 +20,13 @@ class StrEnum(str, enum.Enum):
 
 async def cancel_task(task: asyncio.Task):
     task.cancel()
-    try:
+
+    with suppress(asyncio.CancelledError):
         await task
-    except asyncio.CancelledError:
-        pass
 
 
-def split_list_round_robin(data: list, chunks_num: int):
-    """Divide list into n parts"""
+def split_list_round_robin(data: tp.Iterable, chunks_num: int) -> tp.List[list]:
+    """Divide iterable into `chunks_num` lists"""
     result = [[] for _ in range(chunks_num)]
 
     chunk_indexes = itertools.cycle(i for i in range(chunks_num))
