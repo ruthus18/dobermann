@@ -74,36 +74,11 @@ def candle_from_json(data: bytes) -> Candle:
 class StrategyLogicalError(Exception): ...
 
 
-class ExchangeClient:
-
-    def __init__(self, zmq_ctx: zmq.Context):
-        self.zmq_ctx = zmq_ctx
-
-        self.sender: zmq.Socket = self.zmq_ctx.socket(zmq.PUSH)
-        self.connected = False
-
-    async def notify_event(self, event_name: str, event_data: dict):
-        if not self.connected:
-            self.sender.connect(EXCHANGE_URL)
-
-        await self.sender.send_multipart(event_name.encode(), json.dumps(event_data).encode())
-
-    def close(self):
-        if self.connected:
-            self.sender.close()
-
-    async def open_position(self, data: dict):
-        await self.notify_event('open_position', data)
-
-    async def close_position(self, data: dict):
-        await self.notify_event('close_position', data)
-
-
 class Strategy(ABC):
 
     def __init__(self):
         self.ticker: tp.Optional[Ticker] = None
-        self.exchange: tp.Optional[ExchangeClient] = None
+        self.exchange: tp.Optional['ExchangeClient'] = None
 
         self.candle: tp.Optional[dict] = None
         self.position_id: tp.Optional[str] = None
@@ -111,7 +86,7 @@ class Strategy(ABC):
         self.signals: tp.Dict[dt.datetime: SignalType] = {}
         
 
-    def _init_worker(self, ticker: Ticker, exchange_client: ExchangeClient):
+    def _init_worker(self, ticker: Ticker, exchange_client: 'ExchangeClient'):
         self.ticker = ticker
         self.exchange = exchange_client
 
@@ -319,6 +294,7 @@ class Manager:
 
 def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
     worker = Worker(w_id, strategy, tickers)
+    worker.init_zmq()
 
     worker.log.debug('Worker started')
     try:
@@ -350,13 +326,13 @@ class Worker:
         self.strategies: tp.Dict[Ticker, Strategy] = {}
         self.candles_remaining: tp.Dict[Ticker, int] = {}
 
+        self.exchange_client: ExchangeClient
+
         self._zmq_ctx: zmq.Context
         self.poller: zmq.Poller
         self.registrator: zmq.Socket
         self.candle_receiver: zmq.Socket
         self.controller: zmq.Socket
-        self.exchange_sender: zmq.Socket
-        self.init_zmq()
 
     def init_zmq(self):
         self._zmq_ctx = Context.instance()
@@ -372,17 +348,17 @@ class Worker:
         self.controller.connect(WORKERS_CTRL_URL)
         self.controller.subscribe('')
 
-        self.exchange_sender = self._zmq_ctx.socket(zmq.PUSH)
-        self.exchange_sender.connect(EXCHANGE_URL)
-
         self.poller = zmq.Poller()
         self.poller.register(self.candle_receiver, zmq.POLLIN)
         self.poller.register(self.controller, zmq.POLLIN)
 
+        self.exchange_client = ExchangeClient(zmq_ctx=self._zmq_ctx)
+
     def close_zmq(self):
         self.candle_receiver.close()
         self.controller.close()
-        self.exchange_sender.close()
+        self.exchange_client.close()
+
         self._zmq_ctx.term()
 
     async def register(self):
@@ -402,7 +378,7 @@ class Worker:
     async def run(self):
         for ticker in self.tickers:
             strategy = deepcopy(self._strategy)
-            strategy._init_worker(ticker, self.exchange_sender)
+            strategy._init_worker(ticker, self.exchange_client)
 
             self.strategies[ticker] = strategy
 
@@ -427,8 +403,8 @@ class Worker:
                 self.candles_remaining[ticker] -= 1
 
                 if self.candles_remaining[ticker] == 0:
-                    self.log.info('All candles for %s processed', ticker)
-                    # TODO: send event to exchange
+                    self.log.debug('All candles for %s processed', ticker)
+                    await self.exchange_client.finish_processing(ticker)
 
             if sockets.get(self.controller) == zmq.POLLIN:
                 await self.controller.recv_string()
@@ -437,13 +413,37 @@ class Worker:
                 break
 
 
+class ExchangeClient:
+
+    def __init__(self, zmq_ctx: zmq.Context):
+        self.zmq_ctx = zmq_ctx
+
+        self.sender: zmq.Socket = self.zmq_ctx.socket(zmq.PUSH)
+        self.sender.connect(EXCHANGE_URL)
+
+    def close(self):
+        self.sender.close()
+
+    async def notify_event(self, event_name: str, event_data: dict):
+        await self.sender.send_multipart((event_name.encode(), json.dumps(event_data).encode()))
+
+    async def open_position(self, data: dict):
+        await self.notify_event('open_position', data)
+
+    async def close_position(self, data: dict):
+        await self.notify_event('close_position', data)
+
+    async def finish_processing(self, ticker: str):
+        await self.notify_event('finish_processing', {'ticker': ticker})
+
+
 class Exchange:
 
     def __init__(self):
         self.log = logger.getChild('exchange')
         self._zmq_ctx = Context.instance()
 
-        self.remaining_tickers: tp.List[Ticker]
+        self.remaining_tickers: tp.Set[Ticker]
 
     async def register(self):
         registrator = self._zmq_ctx.socket(zmq.REQ)
@@ -451,7 +451,7 @@ class Exchange:
 
         await registrator.send_multipart((b'reg_exchange', b''))
         _, data = await registrator.recv_multipart()
-        self.remaining_tickers = json.loads(data.decode())
+        self.remaining_tickers = set(json.loads(data.decode()))
 
         self.log.info('Registered! Total tickers: %s', len(self.remaining_tickers))
 
@@ -469,9 +469,26 @@ class Exchange:
             self.log.debug('Waiting events...')
             while True:
                 event_name, event_data = await exchange_sock.recv_multipart()
-                logger.info('Got event `%s`: %s', event_name, event_data)
+                event_name = event_name.decode()
+                event_data = json.loads(event_data.decode())
 
-                ...  # TODO
+                self.log.debug('Got event `%s`: %s', event_name, event_data)
+
+                if event_name == 'open_position':
+                    ...
+
+                elif event_name == 'close_position':
+                    ...
+
+                elif event_name == 'finish_processing':
+                    self.remaining_tickers.remove(event_data['ticker'])
+
+                    if len(self.remaining_tickers) == 0:
+                        self.log.debug('All data processed, returning')
+                        return
+
+                else:
+                    raise RuntimeError(f'unknown event name: `{event_name}`')
 
         exchange_sock.close()
         self.log.debug('Exchange stopped')
