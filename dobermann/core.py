@@ -37,7 +37,7 @@ EXCHANGE_URL = _ZMQ_URL.format(port=4446)
 
 # Infrastructure data flow
 FEED_REGISTRATOR_URL = _ZMQ_URL.format(port=4447)
-SUBPROC_CTRL_URL = _ZMQ_URL.format(port=4448)
+WORKERS_CTRL_URL = _ZMQ_URL.format(port=4448)
 
 SESSION_ID = uuid.uuid4().hex
 SESSION_TIME = dt.datetime.now().strftime('%y%m%d%H%M%S')
@@ -89,7 +89,6 @@ class Strategy(ABC):
         self.position_id: tp.Optional[str] = None
 
         self.signals: tp.Dict[dt.datetime: SignalType] = {}
-        
 
     def _init_worker(self, ticker: Ticker, exchange_client: 'ExchangeClient'):
         self.ticker = ticker
@@ -124,12 +123,7 @@ class Strategy(ABC):
     async def on_candle(self, candle: Candle) -> dict:
         self.candle = candle
         signal = await self.calculate()
-        self.signals[candle.close_time] = signal
-
-        if not isinstance(signal, dict):
-            return {'val': signal}
-    
-        return signal
+        self.signals[candle.open_time] = signal    
 
     @abstractmethod
     async def calculate(self) -> SignalType: ...
@@ -175,7 +169,7 @@ class CandlesFeed:
 
         self.candles_sender = self.zmq_ctx.socket(zmq.PUB)
         self.candles_sender.bind(CANDLES_URL)
-        self.candles_sender.set(zmq.SNDHWM, 0)  # WARNING: may lead to high memory consumption
+        self.candles_sender.set(zmq.SNDHWM, 0)
 
     def close_zmq(self):
         self.candles_sender.close()
@@ -255,7 +249,7 @@ class CandlesFeed:
                 await self.candles_sender.send_multipart((candle.asset.ticker.encode(), candle_to_json(candle)))
 
             self.log.debug('Finish sending candles')
-            await asyncio.sleep(float('inf'))  # wait cancellation
+            await asyncio.sleep(float('inf'))  # wait external cancellation
 
         self.close_zmq()
         self.log.debug('Candles feed stopped')
@@ -276,31 +270,30 @@ class Manager:
         self.log.debug('Manager started')
 
         zmq_ctx = Context.instance()
-        subprocess_controller = zmq_ctx.socket(zmq.PUB)
-        subprocess_controller.bind(SUBPROC_CTRL_URL)
-
-        tickers_splitted = split_list_round_robin(self.tickers, self.pool_size)
+        workers_controller: zmq.Socket = zmq_ctx.socket(zmq.PUB)
+        workers_controller.bind(WORKERS_CTRL_URL)
 
         loop = asyncio.get_event_loop()
         proc_executor = ProcessPoolExecutor(max_workers=self.pool_size)
+        tickers_splitted = split_list_round_robin(self.tickers, self.pool_size)
 
         with suppress(asyncio.CancelledError):
-            tasks = [
+            workers = [
                 loop.run_in_executor(
                     proc_executor, spawn_worker, w_id, self.strategy, tickers_splitted[w_id],
                 )
                 for w_id in range(self.pool_size)
             ]
 
-            await asyncio.sleep(float('inf'))  # wait cancellation
+            await asyncio.sleep(float('inf'))  # wait external cancellation
 
         self.log.debug('Shutdown workers...')
-        await subprocess_controller.send_string('exit')
+        await workers_controller.send_string('exit')
 
-        await asyncio.wait(tasks)
+        await asyncio.wait(workers)
         proc_executor.shutdown(wait=True)
 
-        subprocess_controller.close()
+        workers_controller.close()
         self.log.debug('Manager stopped')
 
 
@@ -325,6 +318,7 @@ def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
         worker.log.debug('Worker stopped')
 
 
+# TODO: Check integrity errors in time series
 class Worker:
 
     def __init__(self, w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
@@ -337,43 +331,46 @@ class Worker:
         self.strategies: tp.Dict[Ticker, Strategy] = {}
         self.candles_remaining: tp.Dict[Ticker, int] = {}
 
-        self.exchange_client: ExchangeClient
-
         self.zmq_ctx: zmq.Context
+
         self.poller: zmq.Poller
         self.registrator: zmq.Socket
-        self.candle_receiver: zmq.Socket
-        # self.signal_sender: zmq.Socket
         self.controller: zmq.Socket
+
+        self.candle_receiver: zmq.Socket
+        self.signal_sender: zmq.Socket
+
+        self.exchange_client: ExchangeClient
 
     def init_zmq(self):
         self.zmq_ctx = Context.instance()
 
         self.candle_receiver = self.zmq_ctx.socket(zmq.SUB)
         self.candle_receiver.connect(CANDLES_URL)
-        self.candle_receiver.set(zmq.RCVHWM, 0)  # WARNING: may lead to high memory consumption
+        self.candle_receiver.set(zmq.RCVHWM, 0)
 
         for ticker in self.tickers:
             self.candle_receiver.subscribe(ticker)
             self.log.debug('Subscribed to candle %s', ticker)
 
         self.controller = self.zmq_ctx.socket(zmq.SUB)
-        self.controller.connect(SUBPROC_CTRL_URL)
+        self.controller.connect(WORKERS_CTRL_URL)
         self.controller.subscribe('')
 
         self.poller = Poller()
         self.poller.register(self.candle_receiver, zmq.POLLIN)
         self.poller.register(self.controller, zmq.POLLIN)
 
-        # self.signal_sender = self.zmq_ctx.socket(zmq.PUSH)
-        # self.signal_sender.connect(SIG_WRITER_URL)
+        self.signal_sender = self.zmq_ctx.socket(zmq.PUSH)
+        self.signal_sender.connect(SIGNALS_URL)
+        self.signal_sender.set(zmq.SNDHWM, 0)
 
         self.exchange_client = ExchangeClient(zmq_ctx=self.zmq_ctx)
 
     def close_zmq(self):
         self.candle_receiver.close()
         self.controller.close()
-        # self.signal_sender.close()
+        self.signal_sender.close()
 
         self.exchange_client.close()
 
@@ -411,25 +408,21 @@ class Worker:
 
                 ticker = ticker.decode()
                 candle = candle_from_json(candle_data)
-
                 # self.log.debug('Received candle %s: %s', ticker, candle)
 
-                # TODO: check integrity errors in time series
                 strategy = self.strategies[ticker]
-                signal = await strategy.on_candle(candle)
-
-                # await self.signal_sender.send_string(
-                #     json.dumps({
-                #         'ticker': ticker,
-                #         'time': candle.open_time,
-                #         'signal': signal,
-                #     })
-                # )
+                await strategy.on_candle(candle)
 
                 self.candles_remaining[ticker] -= 1
 
                 if self.candles_remaining[ticker] == 0:
                     self.log.debug('All candles for %s processed', ticker)
+
+                    await self.signal_sender.send(json.dumps({
+                        'ticker': ticker,
+                        'signals': strategy.signals,
+                    }).encode())
+
                     await self.exchange_client.finish_processing(ticker)
 
             if sockets.get(self.controller) == zmq.POLLIN:
@@ -437,6 +430,30 @@ class Worker:
 
                 self.log.debug('Received exit event')
                 break
+
+
+async def signal_exporter():
+    log = logger.getChild('exporter')
+    log.debug('Signals exporter finished')
+
+    zmq_ctx = Context.instance()
+    signals_receiver = zmq_ctx.socket(zmq.PULL)
+    signals_receiver.bind(SIGNALS_URL)
+    signals_receiver.set(zmq.RCVHWM, 0)
+
+    total = 4
+    with suppress(asyncio.CancelledError):
+        while True:
+            data = await signals_receiver.recv()
+            event = json.loads(data.decode())
+            log.warning('Received event: %s (%s)', event['ticker'], len(event['signals']))
+
+            total -= 1
+            if total == 0:
+                break
+
+    signals_receiver.close()
+    log.debug('Signals exporter finished')
 
 
 # filename = f'{SESSION_ID}_{SESSION_TIME}_signals.csv'
@@ -532,12 +549,11 @@ async def run_trading_system(
     t_manager = asyncio.create_task(manager.run())
     t_feed = asyncio.create_task(candles_feed.run())
     t_exchange = asyncio.create_task(exchange.run())
+    t_sig_exporter = asyncio.create_task(signal_exporter())
 
     try:
-        await asyncio.wait(
-            (t_exchange, ),
-            return_when=asyncio.FIRST_COMPLETED
-        )
+        await asyncio.wait((t_sig_exporter, t_exchange))
+
     except (KeyboardInterrupt, SystemExit):
         pass
 
@@ -547,6 +563,7 @@ async def run_trading_system(
         await cancel_task(t_manager)
         await cancel_task(t_feed)
         await cancel_task(t_exchange)
+        await cancel_task(t_sig_exporter)
 
         logger.info('Trading system is stopped, goodbye 👋')
 
@@ -581,7 +598,7 @@ if __name__ == '__main__':
         backtest(
             strategy=TestStrategy(),
             start_at=dt.datetime(2021, 1, 1),
-            end_at=dt.datetime(2022, 1, 2),
+            end_at=dt.datetime(2022, 3, 20),
             timeframe=Timeframe.H1,
             tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT', 'NEARUSDT'],
         )
