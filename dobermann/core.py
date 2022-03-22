@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
 import logging.config
+import time
 import typing as tp
 import uuid
 from abc import ABC, abstractmethod
@@ -35,7 +36,11 @@ EXCHANGE_URL = _ZMQ_URL.format(port=4445)
 
 # Infrastructure data flow
 FEED_REGISTRATOR_URL = _ZMQ_URL.format(port=4446)
-WORKERS_CTRL_URL = _ZMQ_URL.format(port=4447)
+SUBPROC_CTRL_URL = _ZMQ_URL.format(port=4447)
+SIG_WRITER_URL = _ZMQ_URL.format(port=4448)
+
+SESSION_ID = uuid.uuid4().hex
+SESSION_TIME = dt.datetime.now().strftime('%y%m%d%H%M%S')
 
 
 SignalType = tp.TypeVar('SignalType')
@@ -165,6 +170,7 @@ class CandlesFeed:
 
         self.candles_sender = self._zmq_ctx.socket(zmq.PUB)
         self.candles_sender.bind(CANDLES_URL)
+        self.candles_sender.set(zmq.SNDHWM, 0)  # WARNING: may lead to high memory consumption
 
     def close_zmq(self):
         self.candles_sender.close()
@@ -264,31 +270,34 @@ class Manager:
     async def run(self):
         self.log.debug('Manager started')
 
-        _zmq_ctx = Context.instance()
-        workers_sock = _zmq_ctx.socket(zmq.PUB)
-        workers_sock.bind(WORKERS_CTRL_URL)
+        zmq_ctx = Context.instance()
+        subprocess_controller = zmq_ctx.socket(zmq.PUB)
+        subprocess_controller.bind(SUBPROC_CTRL_URL)
 
         tickers_splitted = split_list_round_robin(self.tickers, self.pool_size)
 
         loop = asyncio.get_event_loop()
-        pool = ProcessPoolExecutor(max_workers=WORKERS_POOL_SIZE)
+        proc_executor = ProcessPoolExecutor(max_workers=WORKERS_POOL_SIZE)
 
         with suppress(asyncio.CancelledError):
             tasks = [
                 loop.run_in_executor(
-                    pool, spawn_worker, w_id, self.strategy, tickers_splitted[w_id],
+                    proc_executor, spawn_worker, w_id, self.strategy, tickers_splitted[w_id],
                 )
                 for w_id in range(self.pool_size)
+            ] + [
+                loop.run_in_executor(proc_executor, signal_writer)
             ]
 
             await asyncio.sleep(float('inf'))  # wait cancellation
 
         self.log.debug('Shutdown workers...')
-        await workers_sock.send_string('exit')
+        await subprocess_controller.send_string('exit')
 
         await asyncio.wait(tasks)
-        pool.shutdown(wait=True)
+        proc_executor.shutdown(wait=True)
 
+        subprocess_controller.close()
         self.log.debug('Manager stopped')
 
 
@@ -313,7 +322,6 @@ def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
         worker.log.debug('Worker stopped')
 
 
-# TODO: Сохранение сигналов стратегий (передавать через сокет в менеджер, который будет писать в csv)
 class Worker:
 
     def __init__(self, w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
@@ -339,13 +347,14 @@ class Worker:
 
         self.candle_receiver = self._zmq_ctx.socket(zmq.SUB)
         self.candle_receiver.connect(CANDLES_URL)
+        self.candle_receiver.set(zmq.RCVHWM, 0)  # WARNING: may lead to high memory consumption
 
         for ticker in self.tickers:
             self.candle_receiver.subscribe(ticker)
             self.log.debug('Subscribed to candle %s', ticker)
 
         self.controller = self._zmq_ctx.socket(zmq.SUB)
-        self.controller.connect(WORKERS_CTRL_URL)
+        self.controller.connect(SUBPROC_CTRL_URL)
         self.controller.subscribe('')
 
         self.poller = zmq.Poller()
@@ -405,6 +414,66 @@ class Worker:
                 if self.candles_remaining[ticker] == 0:
                     self.log.debug('All candles for %s processed', ticker)
                     await self.exchange_client.finish_processing(ticker)
+
+            if sockets.get(self.controller) == zmq.POLLIN:
+                await self.controller.recv_string()
+
+                self.log.debug('Received exit event')
+                break
+
+
+def signal_writer():
+    log = logger.getChild('writer')
+
+    log.debug('Signal writer started')
+    try:
+        writer = SignalWriter(log)
+        asyncio.run(writer.run())
+
+    except (KeyboardInterrupt, SystemExit):
+        log.debug('Force shutdown signal writer...')
+
+    except Exception as e:
+        log.exception(
+            'Exception occured while writing signals to file: (%s) %s', e.__class__.__name__, e
+        )
+
+    finally:
+        writer.close()
+        log.debug('Signal writer stopped')
+
+
+class SignalWriter:
+
+    def __init__(self, log):
+        self.log = log
+        self.zmq_ctx = Context.instance()
+
+        self.signal_receiver = self.zmq_ctx.socket(zmq.PULL)
+        self.signal_receiver.connect(SIG_WRITER_URL)
+
+        self.controller = self.zmq_ctx.socket(zmq.SUB)
+        self.controller.connect(SUBPROC_CTRL_URL)
+        self.controller.subscribe('')
+
+        self.poller = zmq.Poller()
+        self.poller.register(self.signal_receiver, zmq.POLLIN)
+        self.poller.register(self.controller, zmq.POLLIN)
+
+    def close(self):
+        self.controller.close()
+        self.signal_receiver.close()
+
+    async def run(self):
+        filename = f'{SESSION_ID}_{SESSION_TIME}_signals.csv'
+        self.log.debug('filename=%s', filename)
+
+        self.log.debug('Waiting events...')
+        while True:
+            sockets = dict(self.poller.poll())
+
+            if sockets.get(self.signal_receiver) == zmq.POLLIN:
+                ...
 
             if sockets.get(self.controller) == zmq.POLLIN:
                 await self.controller.recv_string()
@@ -551,8 +620,8 @@ if __name__ == '__main__':
     asyncio.run(
         backtest(
             strategy=TestStrategy(),
-            start_at=dt.datetime(2022, 2, 1),
-            end_at=dt.datetime(2022, 2, 2),
+            start_at=dt.datetime(2022, 1, 1),
+            end_at=dt.datetime(2022, 2, 1),
             timeframe=Timeframe.H1,
             tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT', 'NEARUSDT'],
         )

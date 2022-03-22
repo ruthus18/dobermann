@@ -1,10 +1,10 @@
 import logging
 from decimal import Decimal
-from typing import Any, Dict, Literal, Optional
+from pathlib import Path
+from typing import Any, Dict, Literal
 
 import pytz
 from pydantic import BaseSettings, Field, SecretStr, root_validator
-from pytz.tzinfo import DstTzInfo
 
 
 class Settings(BaseSettings):
@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     LOGGING_LEVEL: Literal['DEBUG', 'INFO', 'ERROR'] = Field('INFO')
     LOGGING: Dict[str, Any] = {}
+
+    BASE_DIR = Path(__file__).resolve().parent.parent
+    DOBERMANN_DATA_DIR = Path(BASE_DIR, 'dobermann', 'data')
 
     @root_validator
     @classmethod
