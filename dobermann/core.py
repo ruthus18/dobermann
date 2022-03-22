@@ -10,7 +10,6 @@ from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
 
-import pandas as pd
 import simplejson as json
 import zmq
 from tortoise.queryset import QuerySet
@@ -19,7 +18,6 @@ from zmq.asyncio import Context
 from app import db, models
 from app.config import settings
 
-from . import indicators
 from .base import Ticker, Timeframe
 from .utils import cancel_task, split_list_round_robin
 
@@ -198,6 +196,15 @@ class CandlesFeed:
 
         self.log.debug('Total candles: %s', await self.candles_iter.count())
 
+    async def get_candles_count(self, tickers: tp.Iterable[Ticker]) -> tp.Dict[Candle, int]:
+        # FIXME: one query
+        total_candles = {}
+        for ticker in tickers:
+            total = await self.candles_iter.filter(asset__ticker=ticker).count()
+            total_candles[ticker] = total
+
+        return total_candles
+
     async def wait_actors(self):
         registrator = self._zmq_ctx.socket(zmq.REP)
         registrator.bind(FEED_REGISTRATOR_URL)
@@ -205,24 +212,26 @@ class CandlesFeed:
         workers_remaining = self.pool_size
         exchange_ready = False
 
-        self.log.debug('Waiting workers and exchange to init...')
+        self.log.debug('Waiting workers and exchange to register...')
 
         while workers_remaining or not exchange_ready:
     
             actor_type, data = await registrator.recv_multipart()
 
             if actor_type == b'reg_worker':
-                workers_remaining -= 1
-                self.log.info('WORKER REGISTERED, REMAINING = %s', workers_remaining)
+                tickers = json.loads(data.decode())
+                candles_count = await self.get_candles_count(tickers)
 
-                await registrator.send_multipart((b'reg_worker', b'42'))
+                await registrator.send_multipart((b'reg_worker', json.dumps(candles_count).encode()))
+                workers_remaining -= 1
 
             elif actor_type == b'reg_exchange':
-                self.log.info('EXCHANGE REGISTERED')
+                total_tickers = len(self.tickers)
+
+                await registrator.send_multipart((b'reg_exchange', str(total_tickers).encode()))
                 exchange_ready = True
 
-                await registrator.send_multipart((b'reg_exchange', b'3'))
-
+        self.log.debug('Workers and exchange registered')
         registrator.close()
 
     async def run(self):
@@ -316,7 +325,7 @@ class Worker:
 
         self._strategy = strategy
         self.strategies: tp.Dict[Ticker, Strategy] = {}
-        self.remaining_candles: tp.Dict[Ticker, Strategy] = {}
+        self.candles_remaining: tp.Dict[Ticker, int] = {}
 
         self._zmq_ctx: zmq.Context
         self.poller: zmq.Poller
@@ -358,9 +367,12 @@ class Worker:
         registrator.connect(FEED_REGISTRATOR_URL)
 
         await registrator.send_multipart((b'reg_worker', json.dumps(self.tickers).encode()))
-        _, remaining = await registrator.recv_multipart()
+        response_type, response_data = await registrator.recv_multipart()
 
-        self.log.debug('Registered! Remaining candles: %s', remaining)
+        assert response_type == b'reg_worker'
+        self.candles_remaining = json.loads(response_data.decode())
+
+        self.log.debug('Registered! Remaining candles: %s', self.candles_remaining)
 
         registrator.close()
 
@@ -389,6 +401,12 @@ class Worker:
                 strategy = self.strategies[ticker]
                 await strategy.on_candle(candle)
 
+                self.candles_remaining[ticker] -= 1
+
+                if self.candles_remaining[ticker] == 0:
+                    self.log.info('All candles for %s processed', ticker)
+                    # TODO: send event to exchange
+
             if sockets.get(self.controller) == zmq.POLLIN:
                 await self.controller.recv_string()
 
@@ -409,7 +427,7 @@ class Exchange:
         await registrator.send_multipart((b'reg_exchange', b''))
         _, remaining = await registrator.recv_multipart()
 
-        self.log.info('REGISTERED! REMAINING TICKERS: %s', remaining)
+        self.log.info('Registered! Total tickers: %s', remaining)
 
         registrator.close()
 
@@ -491,7 +509,7 @@ if __name__ == '__main__':
         backtest(
             strategy=TestStrategy(),
             start_at=dt.datetime(2022, 2, 1),
-            end_at=dt.datetime(2022, 2, 3),
+            end_at=dt.datetime(2022, 2, 2),
             timeframe=Timeframe.H1,
             tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT', 'NEARUSDT'],
         )
