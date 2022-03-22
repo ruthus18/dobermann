@@ -1,7 +1,7 @@
 import asyncio
 import datetime as dt
 import logging.config
-import time
+import random
 import typing as tp
 import uuid
 from abc import ABC, abstractmethod
@@ -14,7 +14,7 @@ from decimal import Decimal
 import simplejson as json
 import zmq
 from tortoise.queryset import QuerySet
-from zmq.asyncio import Context
+from zmq.asyncio import Context, Poller
 
 from app import db, models
 from app.config import settings
@@ -32,12 +32,12 @@ _ZMQ_URL = 'tcp://127.0.0.1:{port}'
 
 # Business logic data flow
 CANDLES_URL = _ZMQ_URL.format(port=4444)
-EXCHANGE_URL = _ZMQ_URL.format(port=4445)
+SIGNALS_URL = _ZMQ_URL.format(port=4445)
+EXCHANGE_URL = _ZMQ_URL.format(port=4446)
 
 # Infrastructure data flow
-FEED_REGISTRATOR_URL = _ZMQ_URL.format(port=4446)
-SUBPROC_CTRL_URL = _ZMQ_URL.format(port=4447)
-SIG_WRITER_URL = _ZMQ_URL.format(port=4448)
+FEED_REGISTRATOR_URL = _ZMQ_URL.format(port=4447)
+SUBPROC_CTRL_URL = _ZMQ_URL.format(port=4448)
 
 SESSION_ID = uuid.uuid4().hex
 SESSION_TIME = dt.datetime.now().strftime('%y%m%d%H%M%S')
@@ -121,10 +121,15 @@ class Strategy(ABC):
         })
         self.position_id = None
 
-    async def on_candle(self, candle: Candle):
+    async def on_candle(self, candle: Candle) -> dict:
         self.candle = candle
         signal = await self.calculate()
         self.signals[candle.close_time] = signal
+
+        if not isinstance(signal, dict):
+            return {'val': signal}
+    
+        return signal
 
     @abstractmethod
     async def calculate(self) -> SignalType: ...
@@ -135,7 +140,7 @@ class TestStrategy(Strategy):
         super().__init__()
 
     async def calculate(self) -> SignalType:
-        ...  # TODO
+        return random.randint(0, 5)
 
 
 class CandlesFeed:
@@ -161,14 +166,14 @@ class CandlesFeed:
         self._assets: QuerySet[models.Asset] = None
         self._candles_iter: tp.Awaitable[QuerySet[models.Candle]] = None
 
-        self._zmq_ctx: zmq.Context
+        self.zmq_ctx: zmq.Context
         self.candles_sender: zmq.Socket
         self.init_zmq()
 
     def init_zmq(self):
-        self._zmq_ctx = Context.instance()
+        self.zmq_ctx = Context.instance()
 
-        self.candles_sender = self._zmq_ctx.socket(zmq.PUB)
+        self.candles_sender = self.zmq_ctx.socket(zmq.PUB)
         self.candles_sender.bind(CANDLES_URL)
         self.candles_sender.set(zmq.SNDHWM, 0)  # WARNING: may lead to high memory consumption
 
@@ -207,7 +212,7 @@ class CandlesFeed:
         return total_candles
 
     async def wait_actors(self):
-        registrator = self._zmq_ctx.socket(zmq.REP)
+        registrator = self.zmq_ctx.socket(zmq.REP)
         registrator.bind(FEED_REGISTRATOR_URL)
 
         workers_remaining = self.pool_size
@@ -277,7 +282,7 @@ class Manager:
         tickers_splitted = split_list_round_robin(self.tickers, self.pool_size)
 
         loop = asyncio.get_event_loop()
-        proc_executor = ProcessPoolExecutor(max_workers=WORKERS_POOL_SIZE)
+        proc_executor = ProcessPoolExecutor(max_workers=self.pool_size)
 
         with suppress(asyncio.CancelledError):
             tasks = [
@@ -285,8 +290,6 @@ class Manager:
                     proc_executor, spawn_worker, w_id, self.strategy, tickers_splitted[w_id],
                 )
                 for w_id in range(self.pool_size)
-            ] + [
-                loop.run_in_executor(proc_executor, signal_writer)
             ]
 
             await asyncio.sleep(float('inf'))  # wait cancellation
@@ -336,16 +339,17 @@ class Worker:
 
         self.exchange_client: ExchangeClient
 
-        self._zmq_ctx: zmq.Context
+        self.zmq_ctx: zmq.Context
         self.poller: zmq.Poller
         self.registrator: zmq.Socket
         self.candle_receiver: zmq.Socket
+        # self.signal_sender: zmq.Socket
         self.controller: zmq.Socket
 
     def init_zmq(self):
-        self._zmq_ctx = Context.instance()
+        self.zmq_ctx = Context.instance()
 
-        self.candle_receiver = self._zmq_ctx.socket(zmq.SUB)
+        self.candle_receiver = self.zmq_ctx.socket(zmq.SUB)
         self.candle_receiver.connect(CANDLES_URL)
         self.candle_receiver.set(zmq.RCVHWM, 0)  # WARNING: may lead to high memory consumption
 
@@ -353,25 +357,30 @@ class Worker:
             self.candle_receiver.subscribe(ticker)
             self.log.debug('Subscribed to candle %s', ticker)
 
-        self.controller = self._zmq_ctx.socket(zmq.SUB)
+        self.controller = self.zmq_ctx.socket(zmq.SUB)
         self.controller.connect(SUBPROC_CTRL_URL)
         self.controller.subscribe('')
 
-        self.poller = zmq.Poller()
+        self.poller = Poller()
         self.poller.register(self.candle_receiver, zmq.POLLIN)
         self.poller.register(self.controller, zmq.POLLIN)
 
-        self.exchange_client = ExchangeClient(zmq_ctx=self._zmq_ctx)
+        # self.signal_sender = self.zmq_ctx.socket(zmq.PUSH)
+        # self.signal_sender.connect(SIG_WRITER_URL)
+
+        self.exchange_client = ExchangeClient(zmq_ctx=self.zmq_ctx)
 
     def close_zmq(self):
         self.candle_receiver.close()
         self.controller.close()
+        # self.signal_sender.close()
+
         self.exchange_client.close()
 
-        self._zmq_ctx.term()
+        self.zmq_ctx.term()
 
     async def register(self):
-        registrator = self._zmq_ctx.socket(zmq.REQ)
+        registrator = self.zmq_ctx.socket(zmq.REQ)
         registrator.connect(FEED_REGISTRATOR_URL)
 
         await registrator.send_multipart((b'reg_worker', json.dumps(self.tickers).encode()))
@@ -395,7 +404,7 @@ class Worker:
 
         self.log.debug('Waiting events...')
         while True:
-            sockets = dict(self.poller.poll())
+            sockets = dict(await self.poller.poll())
 
             if sockets.get(self.candle_receiver) == zmq.POLLIN:
                 ticker, candle_data = await self.candle_receiver.recv_multipart()
@@ -407,7 +416,15 @@ class Worker:
 
                 # TODO: check integrity errors in time series
                 strategy = self.strategies[ticker]
-                await strategy.on_candle(candle)
+                signal = await strategy.on_candle(candle)
+
+                # await self.signal_sender.send_string(
+                #     json.dumps({
+                #         'ticker': ticker,
+                #         'time': candle.open_time,
+                #         'signal': signal,
+                #     })
+                # )
 
                 self.candles_remaining[ticker] -= 1
 
@@ -422,64 +439,7 @@ class Worker:
                 break
 
 
-def signal_writer():
-    log = logger.getChild('writer')
-
-    log.debug('Signal writer started')
-    try:
-        writer = SignalWriter(log)
-        asyncio.run(writer.run())
-
-    except (KeyboardInterrupt, SystemExit):
-        log.debug('Force shutdown signal writer...')
-
-    except Exception as e:
-        log.exception(
-            'Exception occured while writing signals to file: (%s) %s', e.__class__.__name__, e
-        )
-
-    finally:
-        writer.close()
-        log.debug('Signal writer stopped')
-
-
-class SignalWriter:
-
-    def __init__(self, log):
-        self.log = log
-        self.zmq_ctx = Context.instance()
-
-        self.signal_receiver = self.zmq_ctx.socket(zmq.PULL)
-        self.signal_receiver.connect(SIG_WRITER_URL)
-
-        self.controller = self.zmq_ctx.socket(zmq.SUB)
-        self.controller.connect(SUBPROC_CTRL_URL)
-        self.controller.subscribe('')
-
-        self.poller = zmq.Poller()
-        self.poller.register(self.signal_receiver, zmq.POLLIN)
-        self.poller.register(self.controller, zmq.POLLIN)
-
-    def close(self):
-        self.controller.close()
-        self.signal_receiver.close()
-
-    async def run(self):
-        filename = f'{SESSION_ID}_{SESSION_TIME}_signals.csv'
-        self.log.debug('filename=%s', filename)
-
-        self.log.debug('Waiting events...')
-        while True:
-            sockets = dict(self.poller.poll())
-
-            if sockets.get(self.signal_receiver) == zmq.POLLIN:
-                ...
-
-            if sockets.get(self.controller) == zmq.POLLIN:
-                await self.controller.recv_string()
-
-                self.log.debug('Received exit event')
-                break
+# filename = f'{SESSION_ID}_{SESSION_TIME}_signals.csv'
 
 
 class ExchangeClient:
@@ -510,26 +470,26 @@ class Exchange:
 
     def __init__(self):
         self.log = logger.getChild('exchange')
-        self._zmq_ctx = Context.instance()
+        self.zmq_ctx = Context.instance()
 
         self.remaining_tickers: tp.Set[Ticker]
 
     async def register(self):
-        registrator = self._zmq_ctx.socket(zmq.REQ)
+        registrator = self.zmq_ctx.socket(zmq.REQ)
         registrator.connect(FEED_REGISTRATOR_URL)        
 
         await registrator.send_multipart((b'reg_exchange', b''))
         _, data = await registrator.recv_multipart()
         self.remaining_tickers = set(json.loads(data.decode()))
 
-        self.log.info('Registered! Total tickers: %s', len(self.remaining_tickers))
+        self.log.debug('Registered! Total tickers: %s', len(self.remaining_tickers))
 
         registrator.close()
 
     async def run(self):
         self.log.debug('Exchange started')
 
-        exchange_sock = self._zmq_ctx.socket(zmq.PULL)
+        exchange_sock = self.zmq_ctx.socket(zmq.PULL)
         exchange_sock.bind(EXCHANGE_URL)
 
         with suppress(asyncio.CancelledError):
@@ -554,7 +514,7 @@ class Exchange:
 
                     if len(self.remaining_tickers) == 0:
                         self.log.debug('All data processed, returning')
-                        return
+                        break
 
                 else:
                     raise RuntimeError(f'unknown event name: `{event_name}`')
@@ -620,8 +580,8 @@ if __name__ == '__main__':
     asyncio.run(
         backtest(
             strategy=TestStrategy(),
-            start_at=dt.datetime(2022, 1, 1),
-            end_at=dt.datetime(2022, 2, 1),
+            start_at=dt.datetime(2021, 1, 1),
+            end_at=dt.datetime(2022, 1, 2),
             timeframe=Timeframe.H1,
             tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT', 'NEARUSDT'],
         )
