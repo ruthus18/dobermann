@@ -2,7 +2,9 @@ import asyncio
 import datetime as dt
 import logging.config
 import random
+import time
 import typing as tp
+from pprint import pprint
 import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
@@ -160,9 +162,11 @@ class CandlesFeed:
         self.pool_size = pool_size
 
         self.log = logger.getChild('feed')
+        self.stats = {}
 
         self._assets: QuerySet[models.Asset] = None
         self._candles_iter: tp.Awaitable[QuerySet[models.Candle]] = None
+        self.candles_total = None
 
         self.zmq_ctx: zmq.Context
         self.candles_sender: zmq.Socket
@@ -188,6 +192,8 @@ class CandlesFeed:
         return await models.Asset.filter(**filter_kwargs)
 
     async def prepare_data(self):
+        _ts = time.time()
+
         self.assets = await self._get_assets_from_db()
         self.log.debug('Assets loaded: %s', len(self.assets))
 
@@ -198,7 +204,11 @@ class CandlesFeed:
             open_time__lt=self.end_at,
         ).select_related('asset').order_by('open_time')
 
-        self.log.debug('Total candles: %s', await self.candles_iter.count())
+        self.candles_total = await self.candles_iter.count()
+        self.log.debug('Total candles: %s', self.candles_total)
+
+        self.stats['prepare_data_time'] = time.time() - _ts
+        self.stats['candles_total'] = self.candles_total
 
     async def get_candles_count(self, tickers: tp.Iterable[Ticker]) -> tp.Dict[Candle, int]:
         # FIXME: one query
@@ -210,6 +220,8 @@ class CandlesFeed:
         return total_candles
 
     async def wait_actors(self):
+        _ts = time.time()
+
         registrator = self.zmq_ctx.socket(zmq.REP)
         registrator.bind(FEED_REGISTRATOR_URL)
 
@@ -241,21 +253,32 @@ class CandlesFeed:
         self.log.debug('Workers and exchange registered')
         registrator.close()
 
+        self.stats['wait_actors_time'] = time.time() - _ts
+
     async def run(self):
         self.log.debug('Candles feed started')
+        _ts_total = time.time()
 
         with suppress(asyncio.CancelledError):
             await self.prepare_data()
             await self.wait_actors()
 
             self.log.debug('Sending candles to workers...')
+            _ts_process = time.time()
             async for candle in self.candles_iter:
                 await self.candles_sender.send_multipart((candle.asset.ticker.encode(), candle_to_json(candle)))
 
+            self.stats['process_candles_time'] = time.time() - _ts_process
+
             self.log.debug('Finish sending candles')
+
+            _ts_idle = time.time()
             await asyncio.sleep(float('inf'))  # wait external cancellation
 
+        self.stats['idle_time'] = time.time() - _ts_idle
         self.close_zmq()
+
+        self.stats['total_time'] = time.time() - _ts_total
         self.log.debug('Candles feed stopped')
 
 
@@ -597,6 +620,8 @@ async def backtest(
     exchange = Exchange()
     await run_trading_system(candles_feed, manager, exchange)
 
+    pprint(candles_feed.stats)
+
     await db.close()
 
 
@@ -604,10 +629,10 @@ if __name__ == '__main__':
     asyncio.run(
         backtest(
             strategy=TestStrategy(),
-            start_at=dt.datetime(2022, 1, 1),
-            end_at=dt.datetime(2022, 2, 1),
-            timeframe=Timeframe.H1,
-            tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT', 'NEARUSDT'],
-            # tickers=None,
+            start_at=dt.datetime(2022, 3, 1),
+            end_at=dt.datetime(2022, 3, 10),
+            timeframe=Timeframe.M5,
+            # tickers=['BTCUSDT', 'ETHUSDT'],
+            tickers=None,
         )
     )
