@@ -7,7 +7,7 @@ license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-asyncpg = "^0.24.0"
+asyncpg = "^0.25.0"
 tortoise-orm = "^0.17.8"
 aerich = "^0.6.1"
 pydantic = {version = "^1.8.2", extras = ["dotenv"]}
@@ -25,6 +25,7 @@ colorlog = "^6.6.0"
 APScheduler = "^3.8.1"
 joblib = "^1.1.0"
 pyzmq = "^22.3.0"
+yoyo-migrations = "^7.3.2"
 
 [tool.poetry.dev-dependencies]
 pytest = "^6.2.5"
@@ -49,6 +50,7 @@ sync = "python -m app market_sync"
 _flake8 = 'flake8 --statistics --show-source .'
 _isort = 'isort -c .'
 lint = ['_flake8', '_isort']
+apply_migrations = 'python -m dobermann.db apply_migrations'
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

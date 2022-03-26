@@ -46,6 +46,10 @@ SESSION_TIME = dt.datetime.now().strftime('%y%m%d%H%M%S')
 SignalType = tp.TypeVar('SignalType')
 
 
+# TODO:
+#   * Обработка ситуаций, когда нет свечей для актива в указаном диапазное (start_at ; end_at)
+
+
 @dataclass
 class Candle:
     open_time: dt.datetime
@@ -314,7 +318,7 @@ def spawn_worker(w_id: int, strategy: Strategy, tickers: tp.List[Ticker]):
         )
 
     finally:
-        worker.close_zmq()
+        # worker.close_zmq()
         worker.log.debug('Worker stopped')
 
 
@@ -429,7 +433,7 @@ class Worker:
                 await self.controller.recv_string()
 
                 self.log.debug('Received exit event')
-                break
+                return
 
 
 async def signal_exporter():
@@ -552,7 +556,7 @@ async def run_trading_system(
     t_sig_exporter = asyncio.create_task(signal_exporter())
 
     try:
-        await asyncio.wait((t_sig_exporter, t_exchange))
+        await asyncio.wait((t_exchange, ))
 
     except (KeyboardInterrupt, SystemExit):
         pass
@@ -583,6 +587,9 @@ async def backtest(
     if not end_at.tzinfo:
         end_at = end_at.astimezone(settings.TIMEZONE)
 
+    if tickers is None:
+        tickers = await models.Asset.filter(removed_at__isnull=True).values_list('ticker', flat=True)
+
     pool_size = min(WORKERS_POOL_SIZE, len(tickers))
 
     candles_feed = CandlesFeed(start_at, end_at, timeframe, tickers, pool_size)
@@ -597,9 +604,10 @@ if __name__ == '__main__':
     asyncio.run(
         backtest(
             strategy=TestStrategy(),
-            start_at=dt.datetime(2021, 1, 1),
-            end_at=dt.datetime(2022, 3, 20),
+            start_at=dt.datetime(2022, 1, 1),
+            end_at=dt.datetime(2022, 2, 1),
             timeframe=Timeframe.H1,
             tickers=['BTCUSDT', 'ETHUSDT', 'DYDXUSDT', 'NEARUSDT'],
+            # tickers=None,
         )
     )

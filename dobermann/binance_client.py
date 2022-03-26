@@ -142,20 +142,22 @@ class BinanceClient:
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
 
-    async def get_spot_assets(self) -> tp.List[Asset]:
+    async def get_spot_assets(self, usdt_only=True, active_only=True) -> tp.List[Asset]:
         response = await self._client.get_exchange_info()
         return [
             Asset(**asset) for asset in response['symbols']
-            if asset['quoteAsset'] == 'USDT'
-            and asset['status'] == 'TRADING'
+            if
+            (not usdt_only or asset['quoteAsset'] == 'USDT') and
+            (not active_only or asset['status'] == 'TRADING')
         ]
 
-    async def get_futures_assets(self) -> tp.List[FuturesAsset]:
+    async def get_futures_assets(self, usdt_only=True, perpetual_only=True) -> tp.List[FuturesAsset]:
         response = await self._client.futures_exchange_info()
         return [
             FuturesAsset(**asset) for asset in response['symbols']
-            if asset['quoteAsset'] == 'USDT'
-            and asset['contractType'] == 'PERPETUAL'
+            if
+            (not usdt_only or asset['quoteAsset'] == 'USDT') and
+            (not perpetual_only or asset['contractType'] == 'PERPETUAL')
         ]
 
     async def get_futures_historical_candles(

@@ -1,7 +1,7 @@
 version: '3.8'
 
 services:
-  db:
+  pgdb:
     image: postgres:13
     ports:
       - 5432:5432
@@ -11,3 +11,13 @@ services:
       POSTGRES_PASSWORD: 'dobermann'
     volumes:
       - /Volumes/Finance/postgres-data:/var/lib/postgresql/data
+  db:
+    image: timescale/timescaledb:latest-pg14
+    ports:
+      - 5432:5432
+    environment:
+      POSTGRES_DB: 'dobermann'
+      POSTGRES_USER: 'dobermann'
+      POSTGRES_PASSWORD: 'dobermann'
+    volumes:
+      - /Volumes/Finance/timescaledb-data:/var/lib/postgresql/data
