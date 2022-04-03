@@ -12,7 +12,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 from dobermann.binance_client import client
 
-from . import db
+from ..dobermann import db
 from .config import settings
 
 logger = logging.getLogger(__name__)

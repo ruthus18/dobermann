@@ -1,48 +1,43 @@
-import asyncio
-import logging
+from contextlib import asynccontextmanager
+import typing as tp
+from tortoise import Tortoise
 
-import asyncpg
+from .config import settings
 
-from . import config
-
-logger = logging.getLogger(__name__)
-
-
-conn: asyncpg.Connection = None
-
-async def connect():
-    conn = await asyncpg.connect(
-        host=config.DB_HOST,
-        port=config.DB_PORT,
-        user=config.DB_USER,
-        password=config.DB_PASSWORD,
-        database=config.DB_NAME,
-        timeout=10,
-    )
-    return conn
+if tp.TYPE_CHECKING:
+    from asyncpg import Connection
+    from asyncpg.cursor import Cursor
 
 
-async def close():
-    await conn.close()
+async def connect() -> None:
+    await Tortoise.init(settings.TORTOISE_ORM)
 
 
-async def query():
-    ...
+async def close() -> None:
+    await Tortoise.close_connections()
 
 
-def apply_migrations():
-    ...
+@asynccontextmanager
+async def connection() -> Connection:
+    client = Tortoise.get_connection('default')
+
+    async with client.acquire_connection() as conn:
+        yield conn
 
 
-if __name__ == '__main__':
-    import argparse
+@asynccontextmanager
+async def cursor(sql: str) -> Cursor:
+    async with connection() as conn:
+        async with conn.transaction():
+            cursor = await conn.cursor(sql)
+            yield cursor
 
-    parser = argparse.ArgumentParser()
-    parser.add_argument('command', choices=['apply_migrations'])
-    args = parser.parse_args()
 
-    if args.command == 'apply_migrations':
-        apply_migrations()
+# async def query(sql: str) -> tp.Sequence[tp.Dict[tp.Any, tp.Any]]:
+#     conn = Tortoise.get_connection("default")
+#     _, result = await conn.execute_query(sql)
+
+#     return result
 
 
 # TODO: https://github.com/MagicStack/asyncpg/issues/462#issuecomment-747053487

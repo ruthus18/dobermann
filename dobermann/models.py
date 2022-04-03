@@ -5,6 +5,7 @@ from enum import Enum
 import typing as tp
 
 from tortoise import fields, models
+from tortoise.queryset import QuerySet
 
 from dobermann.binance_client import Timeframe
 
@@ -22,7 +23,7 @@ class Asset(models.Model):
         PENDING_TRADING = 'PENDING_TRADING'
         BREAK = 'BREAK'
 
-    ticker = fields.CharField(max_length=16, index=True, unique=True)
+    ticker = fields.CharField(max_length=16, index=True)
 
     base_asset = fields.CharField(max_length=16)
     quote_asset = fields.CharField(max_length=16)
@@ -37,9 +38,8 @@ class Asset(models.Model):
     def __str__(self):
         return self.ticker
 
-    # TODO: move to queryset
     @classmethod
-    def active(cls) -> tp.Iterable[str]:
+    def active(cls) -> tp.Awaitable[QuerySet]:
         return cls.filter(removed_at__isnull=True)
 
 

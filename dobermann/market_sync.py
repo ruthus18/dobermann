@@ -3,6 +3,8 @@ import datetime as dt
 import logging.config
 import typing as tp
 from functools import partial
+
+from ..dobermann import db, models
 from .config import settings
 
 from tortoise import timezone as tz
@@ -11,7 +13,7 @@ from tqdm.asyncio import tqdm as tqdm_async
 
 from dobermann import BinanceClient, Timeframe
 
-from . import db, models, scheduler
+from . import scheduler
 
 if tp.TYPE_CHECKING:
     from dobermann import FuturesAsset
