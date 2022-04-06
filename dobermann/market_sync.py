@@ -2,18 +2,14 @@ import asyncio
 import datetime as dt
 import logging.config
 import typing as tp
-from functools import partial
-
-from ..dobermann import db, models
-from .config import settings
 
 from tortoise import timezone as tz
 from tqdm import tqdm
 from tqdm.asyncio import tqdm as tqdm_async
 
-from dobermann import BinanceClient, Timeframe
-
-from . import scheduler
+from . import db, models, scheduler
+from .binance_client import BinanceClient, Timeframe
+from .config import settings
 
 if tp.TYPE_CHECKING:
     from dobermann import FuturesAsset
@@ -48,14 +44,23 @@ async def update_assets():
     logger.info('Assets added: %s, removed: %s', len(to_create_tickers), len(to_remove_tickers))
 
 
+timeframe_to_delta = {
+    Timeframe.M1: dt.timedelta(minutes=1),
+    Timeframe.M5: dt.timedelta(minutes=5),
+    Timeframe.H1: dt.timedelta(hours=1),
+}
+
+
 async def update_historical_candles(timeframe: Timeframe = Timeframe.D1):
     last_candle_mark = {
         asset_id: max_time
         for asset_id, max_time in await db.query(
-            f"SELECT asset_id, max(close_time) FROM candle WHERE timeframe = '{timeframe}' GROUP BY asset_id;"
+            f"SELECT asset_id, max(open_time) FROM candle WHERE timeframe = '{timeframe}' GROUP BY asset_id;"
         )
     }
     assets = await models.Asset.filter(removed_at__isnull=True).only('id', 'ticker', 'onboard_date')
+
+    delta = timeframe_to_delta[timeframe]
 
     async with BinanceClient() as client:
         for asset in tqdm(assets):
@@ -67,7 +72,7 @@ async def update_historical_candles(timeframe: Timeframe = Timeframe.D1):
                 candle async for candle in tqdm_async(client.get_futures_historical_candles(
                     ticker=asset.ticker,
                     timeframe=timeframe,
-                    start=last_candle_at,
+                    start=last_candle_at - dt.timedelta(hours=5) + delta,  # FIXME
                 ))
             ]
             await models.Candle.bulk_create([
@@ -84,10 +89,6 @@ async def update_historical_candles(timeframe: Timeframe = Timeframe.D1):
 
 
 # <DRAFT> (for live trading purposes only, on backtest this logic not using)
-
-# timeframe_to_delta = {
-#     Timeframe.M1: dt.timedelta(minutes=1),
-# }
 
 
 # @scheduler.job()
@@ -152,14 +153,14 @@ async def update_historical_candles(timeframe: Timeframe = Timeframe.D1):
 
 # TODO: Раздельно конфигурировать lab и live среду
 # def main():
-#     scheduler.add_job(
-#         sync_assets,
-#         '58 * * * *',  # every hour before candles sync
-#     )
-#     scheduler.add_job(
-#         partial(sync_candles, Timeframe.M1),
-#         '* * * * *',  # every 5 minutes
-#         name='sync_candles[1m]',
+    # scheduler.add_job(
+    #     sync_assets,
+    #     '58 * * * *',  # every hour before candles sync
+    # )
+    # scheduler.add_job(
+    #     partial(sync_candles, Timeframe.M1),
+    #     '* * * * *',  # every 5 minutes
+    #     name='sync_candles[1m]',
     # )
     # scheduler.add_job(
     #     partial(sync_candles, Timeframe.M5),
@@ -179,7 +180,7 @@ async def update_historical_candles(timeframe: Timeframe = Timeframe.D1):
     # scheduler.add_job(sync_candles_4h, '0 */4 * * *')                 # every 4 hours
     # scheduler.add_job(sync_candles_1d, '0 0 * * *')         # every day  # TODO: may be timezone mismatch, need check
 
-    # Запускается после полной актуализации свечей (на всех таймфреймах) раз в день
+    # # Запускается после полной актуализации свечей (на всех таймфреймах) раз в день
     # scheduler.add_job(fix_gaps_in_candles, '0 4 * * *')
 
     # asyncio.run(scheduler.run_scheduler())
@@ -187,15 +188,24 @@ async def update_historical_candles(timeframe: Timeframe = Timeframe.D1):
 # </DRAFT>
 
 
-async def main():
-    await db.init()
-    logger.info('Updating 1H candles...')
-    await update_historical_candles(Timeframe.H1)
+async def _main():
+    await db.connect()
+ 
+    logger.info('Updating assets...')
+    await update_assets()
 
     logger.info('Updating 1H candles...')
+    await update_historical_candles(Timeframe.H1)
+    await db.close()
+
+    logger.info('Updating 5M candles...')
     await update_historical_candles(Timeframe.M5)
     await db.close()
 
 
+def main():
+    asyncio.run(_main())
+
+
 if __name__ == '__main__':
-    asyncio.run(main())
+    main()

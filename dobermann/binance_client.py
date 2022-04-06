@@ -63,7 +63,6 @@ class FuturesAsset(Asset):
 
 class Candle(Model):
     open_time: dt.datetime
-    close_time: dt.datetime
     open: Decimal
     close: Decimal
     low: Decimal

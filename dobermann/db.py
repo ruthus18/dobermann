@@ -18,7 +18,7 @@ async def close() -> None:
 
 
 @asynccontextmanager
-async def connection() -> Connection:
+async def connection() -> 'Connection':
     client = Tortoise.get_connection('default')
 
     async with client.acquire_connection() as conn:
@@ -26,18 +26,18 @@ async def connection() -> Connection:
 
 
 @asynccontextmanager
-async def cursor(sql: str) -> Cursor:
+async def cursor(sql: str) -> 'Cursor':
     async with connection() as conn:
         async with conn.transaction():
             cursor = await conn.cursor(sql)
             yield cursor
 
 
-# async def query(sql: str) -> tp.Sequence[tp.Dict[tp.Any, tp.Any]]:
-#     conn = Tortoise.get_connection("default")
-#     _, result = await conn.execute_query(sql)
+async def query(sql: str) -> tp.Sequence[tp.Dict[tp.Any, tp.Any]]:
+    conn = Tortoise.get_connection("default")
+    _, result = await conn.execute_query(sql)
 
-#     return result
+    return result
 
 
 # TODO: https://github.com/MagicStack/asyncpg/issues/462#issuecomment-747053487

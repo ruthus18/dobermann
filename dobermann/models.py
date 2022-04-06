@@ -44,11 +44,10 @@ class Asset(models.Model):
 
 
 class Candle(models.Model):
-    asset = fields.ForeignKeyField('models.Asset', related_name='candles', on_delete=fields.CASCADE)
-    timeframe = fields.CharEnumField(Timeframe)
+    asset = fields.ForeignKeyField('models.Asset', related_name='candles', on_delete=fields.CASCADE, index=True)
+    timeframe = fields.CharEnumField(Timeframe, index=True)
 
     open_time = fields.DatetimeField()
-    close_time = fields.DatetimeField()
     open = fields.DecimalField(max_digits=16, decimal_places=8)
     close = fields.DecimalField(max_digits=16, decimal_places=8)
     low = fields.DecimalField(max_digits=16, decimal_places=8)
