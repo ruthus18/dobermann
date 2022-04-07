@@ -6,7 +6,7 @@ from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from functools import cached_property
-from joblib import Parallel, delayed
+# from joblib import Parallel, delayed
 import time
 from statistics import geometric_mean
 

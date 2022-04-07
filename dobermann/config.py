@@ -1,4 +1,5 @@
 import datetime as dt
+import typing as tp
 import logging
 from decimal import Decimal
 from pathlib import Path
@@ -24,7 +25,7 @@ class Settings(BaseSettings):
     )
 
     TZ_NAME: str = 'Asia/Yekaterinburg'
-    TIMEZONE: dt.tzinfo = pytz.timezone(TZ_NAME)
+    TIMEZONE: tp.Any = pytz.timezone(TZ_NAME)
 
     BINANCE_KEY: SecretStr = SecretStr('')
     BINANCE_SECRET: SecretStr = SecretStr('')
@@ -53,7 +54,7 @@ class Settings(BaseSettings):
         'timezone': TZ_NAME,
     }
 
-    LOGGING_LEVEL: str = 'INFO'
+    LOGGING_LEVEL: str = 'DEBUG'
     LOGGING: dict = {
         'version': 1,
         'disable_existing_loggers': False,
