@@ -81,7 +81,7 @@ def candle_from_json(data: bytes) -> Candle:
     return Candle(**json.loads(data.decode()))
 
 
-class StrategyLogicalError(Exception): ...
+class StrategyRuntimeError(Exception): ...
 
 
 class Strategy(ABC):
@@ -101,7 +101,7 @@ class Strategy(ABC):
 
     async def open_position(self):
         if self.position_id:
-            raise StrategyLogicalError('Position already open')
+            raise StrategyRuntimeError('Position already open')
 
         self.position_id = uuid.uuid4().hex
 
@@ -115,7 +115,7 @@ class Strategy(ABC):
 
     async def close_position(self):
         if not self.position_id:
-            raise StrategyLogicalError('Position was not open')
+            raise StrategyRuntimeError('Position was not open')
 
         await self.exchange.close_position({
             'type': 'close',

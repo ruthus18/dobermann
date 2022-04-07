@@ -1,6 +1,7 @@
 from contextlib import asynccontextmanager
 import typing as tp
 from tortoise import Tortoise
+from tortoise.connection import connections
 
 from .config import settings
 
@@ -19,17 +20,17 @@ async def close() -> None:
 
 @asynccontextmanager
 async def connection() -> 'Connection':
-    client = Tortoise.get_connection('default')
+    client = connections.get('default')
 
     async with client.acquire_connection() as conn:
         yield conn
 
 
 @asynccontextmanager
-async def cursor(sql: str) -> 'Cursor':
+async def cursor(sql: str, *args) -> 'Cursor':
     async with connection() as conn:
         async with conn.transaction():
-            cursor = await conn.cursor(sql)
+            cursor = await conn.cursor(sql, *args)
             yield cursor
 
 
