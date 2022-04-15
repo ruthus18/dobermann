@@ -21,6 +21,7 @@ colorlog = "^6.6.0"
 APScheduler = "^3.9.1"
 pyzmq = "^22.3.0"
 msgpack = "^1.0.3"
+uvloop = "^0.16.0"
 
 [tool.poetry.dev-dependencies]
 pytest = "^7.1.1"

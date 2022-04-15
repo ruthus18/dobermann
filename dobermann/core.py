@@ -5,6 +5,9 @@ import datetime as dt
 import logging.config
 import typing as tp
 
+import zmq
+from zmq.asyncio import Context, Poller
+
 from .config import settings
 from .binance_client import Timeframe
 
@@ -38,6 +41,9 @@ MANAGER_REGISTRY_URL = _ZMQ_URL.format(port=22334)
 WORKERS_REGISTRY_URL = _ZMQ_URL.format(port=22335)
 
 
+EVENT_ALL_CANDLES_SENT = b'-1'
+
+
 class StrategyRuntimeError(Exception): ...
 
 
@@ -68,12 +74,24 @@ class CandlesFeed:
 
         self.timeframe = timeframe
         self.tickers = tickers
+        self._assets: tp.Dict[Ticker, AssetID] = None
 
         self.log = logger.getChild('feed')
 
-    async def get_actual_tickers(self) -> tp.Set[Ticker]:
+        self.zmq_ctx = Context.instance()
+
+        self.candles_sender = self.zmq_ctx.socket(zmq.PUB)
+        self.candles_sender.bind(CANDLES_URL)
+        self.candles_sender.set(zmq.SNDHWM, 0)
+
+        self._total_candles_sent = 0
+
+    async def get_assets(self) -> tp.Dict[AssetID, Ticker]:
+        if self._assets:
+            return self._assets
+
         query = f'''
-        SELECT asset.ticker FROM asset
+        SELECT asset.id, asset.ticker FROM asset
             LEFT JOIN candle
                 ON candle.asset_id = asset.id
             AND candle.timeframe = $1
@@ -87,21 +105,68 @@ class CandlesFeed:
         if self.tickers:
             args.append(self.tickers)
 
+        self.log.debug('Loading assets...')
         async with db.cursor(query, *args) as cursor:
-            tickers = await cursor.fetch(10 ** 4)
+            assets = await cursor.fetch(10 ** 4)
 
-        return {t[0] for t in tickers}
+        self._assets = dict(assets)
+        self.log.debug('Assets loaded: total=%s', len(assets))
 
-    async def wait_assets_registration(self):
-        ...
+        return self._assets
+
+    async def get_actual_tickers(self) -> tp.Set[Ticker]:
+        assets = await self.get_assets()
+        return set(assets.values())
+
+    async def register_candle_recipients(self):
+        tickers = await self.get_actual_tickers()
+
+        registrator = self.zmq_ctx.socket(zmq.REQ)
+        registrator.connect(FEED_REGISTRY_URL)
+
+        self.log.debug('Waiting to register candle recipients...')
+
+        await registrator.send_multipart([t.encode() for t in tickers])
+        await registrator.recv()
+
+        self.log.debug('Candle recipients registered')
+        registrator.close()
+
+    async def send_candles(self):
+        assets = await self.get_assets()
+        query = '''
+        SELECT * FROM candle
+            WHERE candle.asset_id = ANY($1::int[])
+            AND candle.timeframe = $2
+            AND candle.open_time >= $3
+            AND candle.open_time < $4
+        ORDER BY candle.open_time ASC;
+        '''
+        args = (assets.keys(), self.timeframe, self.start_at, self.end_at)
+
+        async with db.cursor(query, *args) as cursor:
+            while candles_batch := await cursor.fetch(1000):
+                for candle in candles_batch:
+
+                    ticker = assets[candle['asset_id']]
+
+                    await self.candles_sender.send(ticker.encode())
+                    self._total_candles_sent += 1
+
+        await self.candles_sender.send(EVENT_ALL_CANDLES_SENT)
+        self.log.debug('All candles sent: total=%s', self._total_candles_sent)
 
     async def run(self):
         self.log.debug('Candles feed started')
 
         with suppress(asyncio.CancelledError):
-            ...
+            await self.register_candle_recipients()
+            await self.send_candles()
 
         self.log.debug('Candles feed stopped')
+
+    def close(self):
+        self.candles_sender.close()
 
 
 async def backtest(
