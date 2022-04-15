@@ -1,9 +1,14 @@
 import asyncio
-from contextlib import suppress
-import itertools
 import enum
+import itertools
 import typing as tp
+from contextlib import suppress
 from decimal import Decimal
+
+import msgpack
+
+if tp.TYPE_CHECKING:
+    import asyncpg
 
 OptDecimal = tp.Optional[Decimal]
 
@@ -35,3 +40,21 @@ def split_list_round_robin(data: tp.Iterable, chunks_num: int) -> tp.List[list]:
         result[i].append(item)
 
     return result
+
+
+async def disable_decimal_conversion_codec(conn: 'asyncpg.Connection'):
+    await conn.set_type_codec(
+        'numeric',
+        encoder=str,
+        decoder=str,
+        format='text',
+        schema='pg_catalog',
+    )
+
+
+def packb_candle(candle: 'asyncpg.Record') -> bytes:
+    return msgpack.packb({k: v for k, v in candle.items() if k != 'asset_id'}, datetime=True)
+
+
+def unpackb_candle(data: bytes) -> dict:
+    return msgpack.unpackb(data, timestamp=3)

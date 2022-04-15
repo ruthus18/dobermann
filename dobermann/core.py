@@ -1,17 +1,18 @@
-from abc import ABC, abstractmethod
-from contextlib import suppress
 import asyncio
 import datetime as dt
 import logging.config
 import typing as tp
+from abc import ABC, abstractmethod
+from contextlib import suppress
+from dataclasses import dataclass
+from decimal import Decimal
 
 import zmq
 from zmq.asyncio import Context, Poller
 
-from .config import settings
+from . import db, utils
 from .binance_client import Timeframe
-
-from . import db
+from .config import settings
 
 logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')  # TODO: Затянуть либу loguru
@@ -51,6 +52,17 @@ class Strategy(ABC): ...
 
 
 class TestStrategy(Strategy): ...
+
+
+@dataclass(slots=True)
+class Candle:
+    timeframe: Timeframe
+    open_time: dt.datetime
+    open: Decimal
+    close: Decimal
+    low: Decimal
+    high: Decimal
+    volume: Decimal
 
 
 class CandlesFeed:
@@ -135,7 +147,7 @@ class CandlesFeed:
     async def send_candles(self):
         assets = await self.get_assets()
         query = '''
-        SELECT * FROM candle
+        SELECT asset_id, timeframe, open_time, open, close, low, high, volume FROM candle
             WHERE candle.asset_id = ANY($1::int[])
             AND candle.timeframe = $2
             AND candle.open_time >= $3
@@ -144,14 +156,19 @@ class CandlesFeed:
         '''
         args = (assets.keys(), self.timeframe, self.start_at, self.end_at)
 
-        async with db.cursor(query, *args) as cursor:
-            while candles_batch := await cursor.fetch(1000):
-                for candle in candles_batch:
+        async with db.connection() as conn:
+            await utils.disable_decimal_conversion_codec(conn)
 
-                    ticker = assets[candle['asset_id']]
+            async with conn.transaction():
+                cursor = await conn.cursor(query, *args)
 
-                    await self.candles_sender.send(ticker.encode())
-                    self._total_candles_sent += 1
+                while candles_batch := await cursor.fetch(1000):
+                    for candle in candles_batch:
+
+                        ticker = assets[candle['asset_id']].encode()
+                        await self.candles_sender.send_multipart((ticker, utils.packb_candle(candle)))
+
+                        self._total_candles_sent += 1
 
         await self.candles_sender.send(EVENT_ALL_CANDLES_SENT)
         self.log.debug('All candles sent: total=%s', self._total_candles_sent)

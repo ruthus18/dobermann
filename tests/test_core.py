@@ -6,6 +6,7 @@ import zmq
 from zmq.asyncio import Context, Poller
 
 from dobermann import core
+from dobermann.utils import unpackb_candle
 
 
 @pytest.fixture(scope='module')
@@ -74,13 +75,17 @@ async def test_candles_feed__send_candles(zmq_ctx, feed):
     candles_task = asyncio.create_task(feed.send_candles())
 
     candles = []
-    while candle := await candle_receiver.recv():
-        if candle == core.EVENT_ALL_CANDLES_SENT:
-            break
+    while message := await candle_receiver.recv_multipart():
+        match message:
+            case [_, data]:  # ticker, data
+                candles.append(data)
 
-        candles.append(candle)
+            case [core.EVENT_ALL_CANDLES_SENT]:
+                break
 
     await asyncio.wait((candles_task, ))
     assert feed._total_candles_sent == len(candles)
+
+    assert core.Candle(**unpackb_candle(candles[0]))
 
     candle_receiver.close()
