@@ -36,6 +36,8 @@ EXCHANGE_URL = _ZMQ_URL.format(port=22223)
 WORKERS_CONTROLLER_URL = _ZMQ_URL.format(port=22224)
 WORKERS_RESPONDER_URL = _ZMQ_URL.format(port=22225)
 
+MAX_WORKERS_POOL_SIZE = 12
+
 EVENT_ALL_CANDLES_SENT = b'-1'
 
 TZ = pytz.timezone(settings.TZ_NAME)
@@ -222,44 +224,70 @@ class CandlesFeed:
         self.candles_sender.close()
 
 
-MAX_WORKERS_POOL_SIZE = 12
+class WorkManager:
 
+    def __init__(self, tickers: list[Ticker], strategy: Strategy, *, pool_size: int | None = None):
+        self.tickers = tickers
+        self.strategy = strategy
+        self.pool_size = pool_size or min(len(tickers), MAX_WORKERS_POOL_SIZE)
 
-@asynccontextmanager
-async def start_workers(tickers: list[Ticker], strategy: Strategy):
-    log = logger.getChild('manager')
-    zmq_ctx = Context.instance()
+        self.workers: list[asyncio.Future] = None
+        self.proc_executor = ProcessPoolExecutor(max_workers=pool_size)
 
-    workers_controller = zmq_ctx.socket(zmq.PUB)
-    workers_controller.bind(WORKERS_CONTROLLER_URL)
+        self.log = logger.getChild('manager')
 
-    workers_responder = zmq_ctx.socket(zmq.PULL)
-    workers_responder.bind(WORKERS_RESPONDER_URL)
+        self.zmq_ctx = Context.instance()
 
-    pool_size = min(len(tickers), MAX_WORKERS_POOL_SIZE)
-    tickers_splitted = split_list_round_robin(tickers, pool_size)
+        self.workers_controller = self.zmq_ctx.socket(zmq.PUB)
+        self.workers_controller.bind(WORKERS_CONTROLLER_URL)
 
-    loop = asyncio.get_event_loop()
-    proc_executor = ProcessPoolExecutor(max_workers=pool_size)
-    workers = [
-        loop.run_in_executor(
-            proc_executor, spawn_worker, w_id, tickers_splitted[w_id], strategy
-        )
-        for w_id in range(pool_size)
-    ]
-    for _ in range(pool_size):
-        await workers_responder.recv()
+        self.workers_responder = self.zmq_ctx.socket(zmq.PULL)
+        self.workers_responder.bind(WORKERS_RESPONDER_URL)
 
-    log.debug('All workers started')
-    yield
+    async def start_workers(self):
+        if self.workers:
+            raise RuntimeError('Workers already running')
 
-    log.debug('Shutdown workers...')
-    await workers_controller.send_string('exit')
+        loop = asyncio.get_event_loop()
+        tickers_splitted = split_list_round_robin(self.tickers, self.pool_size)
 
-    await asyncio.wait(workers)
-    proc_executor.shutdown(wait=True)
+        self.log.debug('Starting workers...')
+        self.workers = [
+            loop.run_in_executor(
+                self.proc_executor, spawn_worker, w_id, tickers_splitted[w_id], self.strategy
+            )
+            for w_id in range(self.pool_size)
+        ]
+        for _ in range(self.pool_size):
+            await self.workers_responder.recv()
 
-    workers_controller.close()
+        self.log.debug('Workers started')
+
+    async def wait_workers(self):
+        if not self.workers:
+            raise RuntimeError('Workers was not started')
+
+        self.log.debug('Waiting workers to complete...')
+
+        await asyncio.wait(self.workers)
+        self.log.debug('Workers compelted')
+
+    async def shutdown_workers(self):
+        if not self.workers:
+            raise RuntimeError('Workers was not started')
+
+        if not all(worker.done() for worker in self.workers):
+            self.log.debug('Performing force shutdown of workers...')
+
+            await self.workers_controller.send_string('exit')
+            await asyncio.wait(self.workers)
+
+        self.proc_executor.shutdown(wait=True)
+        self.log.debug('Workers shutdown')
+
+    def close(self):
+        self.workers_controller.close()
+        self.workers_responder.close()
 
 
 def spawn_worker(w_id: int, tickers: tp.List[Ticker], strategy: Strategy):
@@ -396,9 +424,14 @@ async def backtest(
     feed = CandlesFeed(start_at, end_at, timeframe, tickers)
     actual_tickers = await feed.get_actual_tickers()
 
-    async with start_workers(actual_tickers, strategy):  # TODO: вынести в полноценный класс
+    manager = WorkManager(actual_tickers, strategy)
+    try:
+        await manager.start_workers()
         await feed.send_candles()
-        await asyncio.sleep(float('inf'))
+        await manager.wait_workers()
+
+    finally:
+        await manager.shutdown_workers()
 
     await db.close()
 
@@ -407,7 +440,7 @@ if __name__ == '__main__':
     asyncio.run(
         backtest(
             strategy=TestStrategy(),
-            start_at=dt.datetime(2022, 4, 1),
+            start_at=dt.datetime(2022, 3, 1),
             end_at=dt.datetime(2022, 4, 10),
             timeframe=Timeframe.M5,
             tickers=['BTCUSDT', 'ETHUSDT'],
