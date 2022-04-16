@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+import enum
 import logging.config
 import typing as tp
 import uuid
@@ -7,8 +8,9 @@ from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import suppress
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from decimal import Decimal
+from functools import cached_property
 
 import pytz
 import simplejson as json
@@ -25,6 +27,7 @@ logger = logging.getLogger('core')  # TODO: Затянуть либу loguru
 
 Ticker = str
 AssetID = int
+PositionID = str
 SignalType = tp.TypeVar('SignalType')
 
 
@@ -35,9 +38,8 @@ EXCHANGE_URL = _ZMQ_URL.format(port=22223)
 WORKERS_CONTROLLER_URL = _ZMQ_URL.format(port=22224)
 WORKERS_RESPONDER_URL = _ZMQ_URL.format(port=22225)
 
-MAX_WORKERS_POOL_SIZE = 12
-
 EVENT_ALL_CANDLES_SENT = b'-1'
+EVENT_ALL_ORDERS_SENT = b'-2'
 
 TZ = pytz.timezone(settings.TZ_NAME)
 
@@ -60,7 +62,63 @@ class Candle:
         })
 
 
-class StrategyRuntimeError(Exception): ...
+class PositionType(str, enum.Enum):
+    LONG = 'long'
+    SHORT = 'short'
+
+    def __str__(self):
+        return self.value
+
+
+@dataclass
+class Position:
+    ticker: str
+    type: PositionType
+
+    enter_time: dt.datetime
+    enter_price: Decimal
+    enter_comission: Decimal = settings.BINANCE_F_COMISSION
+
+    exit_time: dt.datetime = None
+    exit_price: Decimal = None
+    exit_comission: Decimal = settings.BINANCE_F_COMISSION
+
+    stop_loss: Decimal = None
+    take_profit: Decimal = None
+
+    @cached_property
+    def profit(self) -> Decimal:
+        C_IN = self.enter_comission
+        C_OUT = self.exit_comission
+
+        if self.type == PositionType.LONG:
+            profit = ((1 - C_OUT) * self.exit_price) - ((1 + C_IN) * self.enter_price)
+        else:
+            profit = ((1 - C_IN) * self.enter_price) - ((1 + C_OUT) * self.exit_price)
+
+        return utils.RoundedDecimal(profit)
+
+    @cached_property
+    def profit_ratio(self) -> Decimal:
+        C_IN = self.enter_comission
+        C_OUT = self.exit_comission
+
+        if self.type == PositionType.LONG:
+            ratio = ((1 - C_OUT) * self.exit_price) / ((1 + C_IN) * self.enter_price)
+        else:
+            ratio = ((1 - C_IN) * self.enter_price) / ((1 + C_OUT) * self.exit_price)
+
+        return utils.RoundedDecimal(ratio)
+
+    def as_dict(self) -> dict:
+        return {
+            **asdict(self),
+            'profit': self.profit,
+            'profit_ratio': self.profit_ratio,
+        }
+
+
+class StrategyExecutionError(Exception): ...
 
 
 class Strategy(ABC):
@@ -70,39 +128,40 @@ class Strategy(ABC):
         self.exchange: 'ExchangeClient' = None
 
         self.candle: Candle = None
-        self.position_id: str = None
+        self._position_id: str = None
 
     def _init_worker(self, ticker: Ticker, exchange_client: 'ExchangeClient'):
         self.ticker = ticker
         self.exchange = exchange_client
 
-    # TODO: стратегия не должна хранить логику клиента, нужно просто прокисровать вызов в клиент
-    async def open_position(self):
-        if self.position_id:
-            raise StrategyRuntimeError('Position already open')
+    @property
+    def has_position(self) -> bool:
+        return self._position_id is not None
 
-        self.position_id = uuid.uuid4().hex
+    async def open_position(self, position_type: PositionType = PositionType.LONG):
+        if self.has_position:
+            raise StrategyExecutionError('Position already open')
+
+        self._position_id = uuid.uuid4().hex
 
         await self.exchange.open_position({
-            'type': 'open',
-            'position_id': self.position_id,
+            'type': position_type,
+            'position_id': self._position_id,
             'ticker': self.ticker,
             'time': self.candle.open_time,
             'price': self.candle.close,
         })
 
-    # TODO: стратегия не должна хранить логику клиента, нужно просто прокисровать вызов в клиент
     async def close_position(self):
-        if not self.position_id:
-            raise StrategyRuntimeError('Position was not open')
+        if not self.has_position:
+            raise StrategyExecutionError('Position was not open')
 
         await self.exchange.close_position({
-            'type': 'close',
-            'position_id': self.position_id,
+            'position_id': self._position_id,
             'time': self.candle.open_time,
-            'price': self.candle.price,
+            'price': self.candle.close,
         })
-        self.position_id = None
+        self._position_id = None
 
     async def _on_candle(self, candle: Candle) -> SignalType:
         self.candle = candle
@@ -114,8 +173,19 @@ class Strategy(ABC):
 
 class TestStrategy(Strategy):
 
-    async def on_candle(self, candle):
-        return None
+    def __init__(self):
+        super().__init__()
+        self.cnt = 0
+
+    async def on_candle(self, candle: Candle):
+        self.cnt += 1
+        if self.cnt % 100 != 0:
+            return
+
+        if not self.has_position:
+            await self.open_position()
+        else:
+            await self.close_position()
 
 
 class CandlesFeed:
@@ -236,7 +306,7 @@ class WorkManager:
     def __init__(self, tickers: list[Ticker], strategy: Strategy, *, pool_size: int | None = None):
         self.tickers = tickers
         self.strategy = strategy
-        self.pool_size = pool_size or min(len(tickers), MAX_WORKERS_POOL_SIZE)
+        self.pool_size = pool_size or min(len(tickers), settings.MAX_WORKERS_POOL_SIZE)
 
         self.workers: list[asyncio.Future] = None
         self.proc_executor = ProcessPoolExecutor(max_workers=pool_size)
@@ -270,7 +340,7 @@ class WorkManager:
 
         self.log.debug('Workers started')
 
-    async def wait_workers(self):
+    async def wait_workers_complete(self):
         if not self.workers:
             raise RuntimeError('Workers was not started')
 
@@ -411,7 +481,10 @@ class ExchangeClient:
         self.sender.close()
 
     async def send_event(self, event_name: str, event_data: dict):
-        await self.sender.send_multipart((event_name.encode(), json.dumps(event_data).encode()))
+        await self.sender.send_multipart((
+            event_name.encode(),
+            json.dumps(event_data, default=str).encode()
+        ))
 
     async def open_position(self, data: dict):
         await self.send_event('open_position', data)
@@ -419,8 +492,62 @@ class ExchangeClient:
     async def close_position(self, data: dict):
         await self.send_event('close_position', data)
 
-    async def finish_processing(self, ticker: str):
-        await self.send_event('finish_processing', {'ticker': ticker})
+
+class Exchange:
+
+    def __init__(self):
+        self.positions: dict[PositionID, Position] = {}
+
+        self.log = logger.getChild('exchange')
+
+        self.zmq_ctx = Context.instance()
+
+        self.listener = self.zmq_ctx.socket(zmq.PULL)
+        self.listener.bind(EXCHANGE_URL)
+
+    async def process_orders(self):
+        self.log.debug('Processing orders...')
+
+        while msg := await self.listener.recv_multipart():
+            match msg:
+                case [b'open_position', event_data]:
+                    event_data = json.loads(event_data)
+                    self.open_position(event_data)
+
+                case [b'close_position', event_data]:
+                    event_data = json.loads(event_data)
+                    self.close_position(event_data)
+
+                case [EVENT_ALL_ORDERS_SENT]:
+                    break
+
+        self.log.debug('Complete processing orders')
+
+    def open_position(self, event_data: dict):
+        position_id = event_data['position_id']
+
+        self.positions[position_id] = Position(
+            ticker=event_data['ticker'],
+            type=PositionType(event_data['type']),
+            enter_time=dt.datetime.fromisoformat(event_data['time']).astimezone(settings.TIMEZONE),
+            enter_price=Decimal(event_data['price']),
+        )
+
+    def close_position(self, event_data: dict):
+        position_id = event_data['position_id']
+        position = self.positions[position_id]
+
+        position.exit_time = dt.datetime.fromisoformat(event_data['time']).astimezone(settings.TIMEZONE)
+        position.exit_price = Decimal(event_data['price'])
+
+    async def complete(self):
+        sender = self.zmq_ctx.socket(zmq.PUSH)
+        sender.connect(EXCHANGE_URL)
+        await sender.send(EVENT_ALL_ORDERS_SENT)
+        sender.close()
+
+    def close(self):
+        self.listener.close()
 
 
 async def backtest(
@@ -435,14 +562,24 @@ async def backtest(
     feed = CandlesFeed(start_at, end_at, timeframe, tickers)
     actual_tickers = await feed.get_actual_tickers()
 
+    exchange = Exchange()
+    t_exchange = asyncio.create_task(exchange.process_orders())
+
     manager = WorkManager(actual_tickers, strategy)
     try:
         await manager.start_workers()
         await feed.send_candles()
-        await manager.wait_workers()
+        await manager.wait_workers_complete()
+        await exchange.complete()
+
+        await asyncio.wait([t_exchange])
 
     finally:
         await manager.shutdown_workers()
+
+    exchange.close()
+    manager.close()
+    feed.close()
 
     await db.close()
 

@@ -29,7 +29,9 @@ class Settings(BaseSettings):
 
     BINANCE_KEY: SecretStr = SecretStr('')
     BINANCE_SECRET: SecretStr = SecretStr('')
-    BINANCE_F_COMISSION: Decimal = Decimal(0.0004)  # Комиссия Binance Futures за одну операцию (в % от суммы сделки)
+    BINANCE_F_COMISSION: Decimal = Decimal('0.0004')  # Комиссия Binance Futures за одну операцию (в % от суммы сделки)
+
+    MAX_WORKERS_POOL_SIZE = 12
 
     TORTOISE_ORM: dict = {
         'connections': {
