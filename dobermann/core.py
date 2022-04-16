@@ -2,19 +2,23 @@ import asyncio
 import datetime as dt
 import logging.config
 import typing as tp
+import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
 from contextlib import asynccontextmanager, suppress
+from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
 
+import simplejson as json
+import pytz
 import zmq
 from zmq.asyncio import Context, Poller
 
 from . import db
 from .binance_client import Timeframe
 from .config import settings
-from .utils import split_list_round_robin, disable_decimal_conversion_codec, packb_candle, unpackb_candle
+from .utils import disable_decimal_conversion_codec, packb_candle, split_list_round_robin, unpackb_candle
 
 logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')  # TODO: Затянуть либу loguru
@@ -27,29 +31,14 @@ SignalType = tp.TypeVar('SignalType')
 
 _ZMQ_URL = 'tcp://127.0.0.1:{port}'
 
-# Business logic data flow
-# ------------------------
-# Feed (PUB) -> Workers (SUB) : candles & stop events
 CANDLES_URL = _ZMQ_URL.format(port=22222)
-# Workers (PUSH) -> Exchange (PULL): orders & start/stop events
-ORDERS_URLS = _ZMQ_URL.format(port=22223)
-
-# Infrastructure data flow
-# ------------------------
-WORKERS_CONTROLLER_URL = _ZMQ_URL.format(port=22333)
-WORKERS_RESPONDER_URL = _ZMQ_URL.format(port=22334)
-
+EXCHANGE_URL = _ZMQ_URL.format(port=22223)
+WORKERS_CONTROLLER_URL = _ZMQ_URL.format(port=22224)
+WORKERS_RESPONDER_URL = _ZMQ_URL.format(port=22225)
 
 EVENT_ALL_CANDLES_SENT = b'-1'
 
-
-class StrategyRuntimeError(Exception): ...
-
-
-class Strategy(ABC): ...
-
-
-class TestStrategy(Strategy): ...
+TZ = pytz.timezone(settings.TZ_NAME)
 
 
 @dataclass(slots=True)
@@ -61,6 +50,67 @@ class Candle:
     low: Decimal
     high: Decimal
     volume: Decimal
+
+    @classmethod
+    def from_dict(cls, d: dict) -> 'Candle':
+        return cls(**{
+            **d,
+            'open_time': d['open_time'].astimezone(TZ)
+        })
+
+
+class StrategyRuntimeError(Exception): ...
+
+
+class Strategy(ABC):
+
+    def __init__(self):
+        self.ticker: tp.Optional[Ticker] = None
+        self.exchange: tp.Optional['ExchangeClient'] = None
+
+        self.candle: tp.Optional[dict] = None
+        self.position_id: tp.Optional[str] = None
+
+        self.signals: tp.Dict[dt.datetime: SignalType] = {}
+
+    def _init_worker(self, ticker: Ticker, exchange_client: 'ExchangeClient'):
+        self.ticker = ticker
+        self.exchange = exchange_client
+
+    async def open_position(self):
+        if self.position_id:
+            raise StrategyRuntimeError('Position already open')
+
+        self.position_id = uuid.uuid4().hex
+
+        await self.exchange.open_position({
+            'type': 'open',
+            'position_id': self.position_id,
+            'ticker': self.ticker,
+            'time': self.candle.open_time,
+            'price': self.candle.close,
+        })
+
+    async def close_position(self):
+        if not self.position_id:
+            raise StrategyRuntimeError('Position was not open')
+
+        await self.exchange.close_position({
+            'type': 'close',
+            'position_id': self.position_id,
+            'time': self.candle.open_time,
+            'price': self.candle.price,
+        })
+        self.position_id = None
+
+    @abstractmethod
+    async def on_candle(self, candle: Candle) -> SignalType: ...
+
+
+class TestStrategy(Strategy):
+
+    async def on_candle(self, candle):
+        return None
 
 
 class CandlesFeed:
@@ -228,7 +278,7 @@ def spawn_worker(w_id: int, tickers: tp.List[Ticker], strategy: Strategy):
         )
 
     finally:
-        # worker.close_zmq()
+        worker.close()
         worker.log.debug('Worker stopped')
 
 
@@ -240,17 +290,19 @@ class Worker:
         self._strategy = strategy
         self.strategies: tp.Dict[Ticker, Strategy] = {}
 
+        self._total_candles_processed = 0
+
         self.log = logger.getChild(f'worker[{w_id}]')
 
         self.zmq_ctx = Context.instance()
+
+        self.exchange_client = ExchangeClient(zmq_ctx=self.zmq_ctx)
 
         self.candles_receiver = self.zmq_ctx.socket(zmq.SUB)
         self.candles_receiver.connect(CANDLES_URL)
         self.candles_receiver.set(zmq.RCVHWM, 0)
 
-        for ticker in self.tickers:
-            self.candles_receiver.subscribe(ticker)
-
+        self.subscribe_to_candles()
         self.candles_receiver.subscribe(EVENT_ALL_CANDLES_SENT)
 
         self.controller = self.zmq_ctx.socket(zmq.SUB)
@@ -261,6 +313,14 @@ class Worker:
         self.poller.register(self.candles_receiver, zmq.POLLIN)
         self.poller.register(self.controller, zmq.POLLIN)
 
+    def subscribe_to_candles(self):
+        for ticker in self.tickers:
+            self.candles_receiver.subscribe(ticker)
+
+            strategy = deepcopy(self._strategy)
+            strategy._init_worker(ticker, self.exchange_client)
+            self.strategies[ticker] = strategy
+
     async def run(self):
         responder = self.zmq_ctx.socket(zmq.PUSH)
         responder.connect(WORKERS_RESPONDER_URL)
@@ -268,18 +328,21 @@ class Worker:
         await responder.send(b'')
         responder.close()
 
-        processed = 0
         while sockets := dict(await self.poller.poll()):
 
             if sockets.get(self.candles_receiver) == zmq.POLLIN:
                 msg = await self.candles_receiver.recv_multipart()
                 match msg:
                     case [ticker, candle_data]:
-                        processed += 1
-                        # self.log.debug('Got candle %s', ticker)
+                        self._total_candles_processed += 1
+
+                        ticker = ticker.decode()
+                        candle = Candle.from_dict(unpackb_candle(candle_data))
+
+                        await self.process_candle(ticker, candle)
 
                     case [EVENT_ALL_CANDLES_SENT]:
-                        self.log.debug('All candles processed: %s', processed)
+                        self.log.debug('All candles processed: total=%s', self._total_candles_processed)
                         return
 
             if sockets.get(self.controller) == zmq.POLLIN:
@@ -288,9 +351,37 @@ class Worker:
                 self.log.debug('Received exit event')
                 return
 
+    async def process_candle(self, ticker: str, candle: Candle):
+        strategy = self.strategies[ticker]
+        signal = await strategy.on_candle(candle)
+
     def close(self):
         self.candles_receiver.close()
         self.controller.close()
+
+
+class ExchangeClient:
+
+    def __init__(self, zmq_ctx: zmq.Context):
+        self.zmq_ctx = zmq_ctx
+
+        self.sender: zmq.Socket = self.zmq_ctx.socket(zmq.PUSH)
+        self.sender.connect(EXCHANGE_URL)
+
+    def close(self):
+        self.sender.close()
+
+    async def notify_event(self, event_name: str, event_data: dict):
+        await self.sender.send_multipart((event_name.encode(), json.dumps(event_data).encode()))
+
+    async def open_position(self, data: dict):
+        await self.notify_event('open_position', data)
+
+    async def close_position(self, data: dict):
+        await self.notify_event('close_position', data)
+
+    async def finish_processing(self, ticker: str):
+        await self.notify_event('finish_processing', {'ticker': ticker})
 
 
 async def backtest(
