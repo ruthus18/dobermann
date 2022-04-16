@@ -5,20 +5,19 @@ import typing as tp
 import uuid
 from abc import ABC, abstractmethod
 from concurrent.futures import ProcessPoolExecutor
-from contextlib import asynccontextmanager, suppress
+from contextlib import suppress
 from copy import deepcopy
 from dataclasses import dataclass
 from decimal import Decimal
 
-import simplejson as json
 import pytz
+import simplejson as json
 import zmq
 from zmq.asyncio import Context, Poller
 
-from . import db
+from . import db, utils
 from .binance_client import Timeframe
 from .config import settings
-from .utils import disable_decimal_conversion_codec, packb_candle, split_list_round_robin, unpackb_candle
 
 logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')  # TODO: Затянуть либу loguru
@@ -67,18 +66,17 @@ class StrategyRuntimeError(Exception): ...
 class Strategy(ABC):
 
     def __init__(self):
-        self.ticker: tp.Optional[Ticker] = None
-        self.exchange: tp.Optional['ExchangeClient'] = None
+        self.ticker: Ticker = None
+        self.exchange: 'ExchangeClient' = None
 
-        self.candle: tp.Optional[dict] = None
-        self.position_id: tp.Optional[str] = None
-
-        self.signals: tp.Dict[dt.datetime: SignalType] = {}
+        self.candle: Candle = None
+        self.position_id: str = None
 
     def _init_worker(self, ticker: Ticker, exchange_client: 'ExchangeClient'):
         self.ticker = ticker
         self.exchange = exchange_client
 
+    # TODO: стратегия не должна хранить логику клиента, нужно просто прокисровать вызов в клиент
     async def open_position(self):
         if self.position_id:
             raise StrategyRuntimeError('Position already open')
@@ -93,6 +91,7 @@ class Strategy(ABC):
             'price': self.candle.close,
         })
 
+    # TODO: стратегия не должна хранить логику клиента, нужно просто прокисровать вызов в клиент
     async def close_position(self):
         if not self.position_id:
             raise StrategyRuntimeError('Position was not open')
@@ -104,6 +103,10 @@ class Strategy(ABC):
             'price': self.candle.price,
         })
         self.position_id = None
+
+    async def _on_candle(self, candle: Candle) -> SignalType:
+        self.candle = candle
+        return await self.on_candle(candle)
 
     @abstractmethod
     async def on_candle(self, candle: Candle) -> SignalType: ...
@@ -122,7 +125,7 @@ class CandlesFeed:
         start_at: dt.datetime,
         end_at: dt.datetime,
         timeframe: Timeframe,
-        tickers: tp.Iterable[Ticker] | None,
+        tickers: list[Ticker] | None,
     ):
         if start_at.tzinfo:
             self.start_at = start_at
@@ -136,7 +139,7 @@ class CandlesFeed:
 
         self.timeframe = timeframe
         self.tickers = tickers
-        self._assets: tp.Dict[Ticker, AssetID] = None
+        self._assets: dict[Ticker, AssetID] = None
 
         self.log = logger.getChild('feed')
 
@@ -148,7 +151,7 @@ class CandlesFeed:
 
         self._total_candles_sent = 0
 
-    async def get_assets(self) -> tp.Dict[AssetID, Ticker]:
+    async def get_assets(self) -> dict[AssetID, Ticker]:
         if self._assets:
             return self._assets
 
@@ -156,10 +159,10 @@ class CandlesFeed:
         SELECT asset.id, asset.ticker FROM asset
             LEFT JOIN candle
                 ON candle.asset_id = asset.id
-            AND candle.timeframe = $1
-            AND candle.open_time >= $2
-            AND candle.open_time < $3
-            {'AND asset.ticker = ANY($4::text[])' if self.tickers else ''}
+                AND candle.timeframe = $1
+                AND candle.open_time >= $2
+                AND candle.open_time < $3
+                {'AND asset.ticker = ANY($4::text[])' if self.tickers else ''}
         GROUP BY asset.id
         HAVING COUNT(candle.id) > 0;
         '''
@@ -176,7 +179,7 @@ class CandlesFeed:
 
         return self._assets
 
-    async def get_actual_tickers(self) -> tp.Set[Ticker]:
+    async def get_actual_tickers(self) -> set[Ticker]:
         assets = await self.get_assets()
         return set(assets.values())
 
@@ -185,15 +188,16 @@ class CandlesFeed:
         query = '''
         SELECT asset_id, timeframe, open_time, open, close, low, high, volume FROM candle
             WHERE candle.asset_id = ANY($1::int[])
-            AND candle.timeframe = $2
-            AND candle.open_time >= $3
-            AND candle.open_time < $4
+                AND candle.timeframe = $2
+                AND candle.open_time >= $3
+                AND candle.open_time < $4
         ORDER BY candle.open_time ASC;
         '''
         args = (assets.keys(), self.timeframe, self.start_at, self.end_at)
 
         async with db.connection() as conn:
-            await disable_decimal_conversion_codec(conn)
+            # FIXME: do we really need this premature optimization??? (test)
+            await utils.disable_decimal_conversion_codec(conn)
 
             async with conn.transaction():
                 self.log.debug('Preparing candles to send...')
@@ -203,8 +207,11 @@ class CandlesFeed:
                 while candles_batch := await cursor.fetch(1000):
                     for candle in candles_batch:
 
-                        ticker = assets[candle['asset_id']].encode()
-                        await self.candles_sender.send_multipart((ticker, packb_candle(candle)))
+                        ticker = assets[candle['asset_id']]
+
+                        await self.candles_sender.send_multipart((
+                            ticker.encode(), utils.packb_candle(candle)
+                        ))
 
                         self._total_candles_sent += 1
 
@@ -249,7 +256,7 @@ class WorkManager:
             raise RuntimeError('Workers already running')
 
         loop = asyncio.get_event_loop()
-        tickers_splitted = split_list_round_robin(self.tickers, self.pool_size)
+        tickers_splitted = utils.split_list_round_robin(self.tickers, self.pool_size)
 
         self.log.debug('Starting workers...')
         self.workers = [
@@ -290,12 +297,12 @@ class WorkManager:
         self.workers_responder.close()
 
 
-def spawn_worker(w_id: int, tickers: tp.List[Ticker], strategy: Strategy):
+def spawn_worker(w_id: int, tickers: list[Ticker], strategy: Strategy):
     worker = Worker(w_id, tickers, strategy)
     worker.log.debug('Worker started')
 
     try:
-        asyncio.run(worker.run())
+        asyncio.run(worker.listen_events())
 
     except (KeyboardInterrupt, SystemExit):
         worker.log.debug('Force shutdown worker...')
@@ -311,12 +318,13 @@ def spawn_worker(w_id: int, tickers: tp.List[Ticker], strategy: Strategy):
 
 
 class Worker:
+
     def __init__(self, w_id: int, tickers: list[Ticker],  strategy: Strategy):
         self.w_id = w_id
         self.tickers = tickers
 
         self._strategy = strategy
-        self.strategies: tp.Dict[Ticker, Strategy] = {}
+        self.strategies: dict[Ticker, Strategy] = {}
 
         self._total_candles_processed = 0
 
@@ -349,12 +357,15 @@ class Worker:
             strategy._init_worker(ticker, self.exchange_client)
             self.strategies[ticker] = strategy
 
-    async def run(self):
+    async def notify_ready(self):
         responder = self.zmq_ctx.socket(zmq.PUSH)
         responder.connect(WORKERS_RESPONDER_URL)
 
         await responder.send(b'')
         responder.close()
+
+    async def listen_events(self):
+        await self.notify_ready()
 
         while sockets := dict(await self.poller.poll()):
 
@@ -365,7 +376,7 @@ class Worker:
                         self._total_candles_processed += 1
 
                         ticker = ticker.decode()
-                        candle = Candle.from_dict(unpackb_candle(candle_data))
+                        candle = Candle.from_dict(utils.unpackb_candle(candle_data))
 
                         await self.process_candle(ticker, candle)
 
@@ -381,7 +392,7 @@ class Worker:
 
     async def process_candle(self, ticker: str, candle: Candle):
         strategy = self.strategies[ticker]
-        signal = await strategy.on_candle(candle)
+        signal = await strategy._on_candle(candle)  # TODO: writing signals
 
     def close(self):
         self.candles_receiver.close()
@@ -399,17 +410,17 @@ class ExchangeClient:
     def close(self):
         self.sender.close()
 
-    async def notify_event(self, event_name: str, event_data: dict):
+    async def send_event(self, event_name: str, event_data: dict):
         await self.sender.send_multipart((event_name.encode(), json.dumps(event_data).encode()))
 
     async def open_position(self, data: dict):
-        await self.notify_event('open_position', data)
+        await self.send_event('open_position', data)
 
     async def close_position(self, data: dict):
-        await self.notify_event('close_position', data)
+        await self.send_event('close_position', data)
 
     async def finish_processing(self, ticker: str):
-        await self.notify_event('finish_processing', {'ticker': ticker})
+        await self.send_event('finish_processing', {'ticker': ticker})
 
 
 async def backtest(
@@ -417,7 +428,7 @@ async def backtest(
     start_at: dt.datetime,
     end_at: dt.datetime,
     timeframe: Timeframe,
-    tickers: tp.List[Ticker] | None = None,
+    tickers: list[Ticker] | None = None,
 ):
     await db.connect()
 
@@ -440,7 +451,7 @@ if __name__ == '__main__':
     asyncio.run(
         backtest(
             strategy=TestStrategy(),
-            start_at=dt.datetime(2022, 3, 1),
+            start_at=dt.datetime(2022, 4, 1),
             end_at=dt.datetime(2022, 4, 10),
             timeframe=Timeframe.M5,
             tickers=['BTCUSDT', 'ETHUSDT'],
