@@ -11,13 +11,17 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from functools import cached_property
+from statistics import geometric_mean
 
+import pandas as pd
+import plotly.graph_objects as go
 import pytz
 import simplejson as json
 import zmq
 from zmq.asyncio import Context, Poller
 
-from . import db, utils
+from . import db, graphs, utils
+from .utils import RoundedDecimal
 from .binance_client import Timeframe
 from .config import settings
 
@@ -96,7 +100,7 @@ class Position:
         else:
             profit = ((1 - C_IN) * self.enter_price) - ((1 + C_OUT) * self.exit_price)
 
-        return utils.RoundedDecimal(profit)
+        return RoundedDecimal(profit)
 
     @cached_property
     def profit_ratio(self) -> Decimal:
@@ -108,7 +112,7 @@ class Position:
         else:
             ratio = ((1 - C_IN) * self.enter_price) / ((1 + C_OUT) * self.exit_price)
 
-        return utils.RoundedDecimal(ratio)
+        return RoundedDecimal(ratio)
 
     def as_dict(self) -> dict:
         return {
@@ -496,7 +500,7 @@ class ExchangeClient:
 class Exchange:
 
     def __init__(self):
-        self.positions: dict[PositionID, Position] = {}
+        self._positions: dict[PositionID, Position] = {}
 
         self.log = logger.getChild('exchange')
 
@@ -526,7 +530,7 @@ class Exchange:
     def open_position(self, event_data: dict):
         position_id = event_data['position_id']
 
-        self.positions[position_id] = Position(
+        self._positions[position_id] = Position(
             ticker=event_data['ticker'],
             type=PositionType(event_data['type']),
             enter_time=dt.datetime.fromisoformat(event_data['time']).astimezone(settings.TIMEZONE),
@@ -535,7 +539,7 @@ class Exchange:
 
     def close_position(self, event_data: dict):
         position_id = event_data['position_id']
-        position = self.positions[position_id]
+        position = self._positions[position_id]
 
         position.exit_time = dt.datetime.fromisoformat(event_data['time']).astimezone(settings.TIMEZONE)
         position.exit_price = Decimal(event_data['price'])
@@ -548,6 +552,68 @@ class Exchange:
 
     def close(self):
         self.listener.close()
+    
+    @property
+    def positions(self) -> list[Position]:
+        return sorted(
+            [pos for pos in self._positions.values() if pos.exit_time],
+            key=lambda pos: pos.exit_time,
+        )
+
+
+@dataclass
+class AccountReport:
+    positions: list[Position]
+    trading_start_at: dt.datetime
+    equity_initial_amount: Decimal = Decimal('1000')
+
+    def __repr__(self) -> str:
+        return f'{self.__class__.__name__} (profit={self.total_profit_ratio})'
+
+    # FIXME: Обрабатывать "одновременные сделки" (pos1.exit_time == pos2.exit_time)
+    @cached_property
+    def equities(self) -> pd.Series:
+        _equities = pd.Series(dtype=object)
+        current_eq = self.equity_initial_amount
+
+        initial_time = self.trading_start_at.astimezone(settings.TIMEZONE)
+        _equities[initial_time] = current_eq
+
+        for position in self.positions:
+            current_eq *= position.profit_ratio
+            _equities[position.exit_time] = round(current_eq, 2)
+
+        return _equities
+
+    @property
+    def total_profit_ratio(self):
+        return round(self.equities[-1] / self.equity_initial_amount, 8)
+
+    @cached_property
+    def equity_graph(self) -> go.Figure:
+        return graphs.get_equity_graph(
+            go.Scatter(x=self.equities.index, y=self.equities.values, name='Equity', line=dict(color='#7658e0'))
+        )
+
+    @cached_property
+    def positions_df(self) -> pd.DataFrame:
+        return pd.DataFrame.from_dict(p.as_dict() for p in self.positions)
+
+    @cached_property
+    def summary(self):
+        df = self.positions_df
+        return {
+            'total_profit_ratio': self.total_profit_ratio,
+            'mean_profit_ratio': RoundedDecimal(df.profit_ratio.mean()),
+            'gmean_profit_ratio': RoundedDecimal(geometric_mean(df.profit_ratio)),
+            'max_dropdown': df.profit_ratio.min(),  # FIXME
+            'total_trades': int(df.profit_ratio.count()),
+            'success_trades': int(df.profit_ratio[df.profit_ratio > 1].count()),
+            'fail_trades': int(df.profit_ratio[df.profit_ratio <= 1].count()),
+            'success_trades_ratio': RoundedDecimal(
+                df.profit_ratio[df.profit_ratio > 1].count() / df.profit_ratio.count()
+            ),
+        }
 
 
 async def backtest(
@@ -556,7 +622,7 @@ async def backtest(
     end_at: dt.datetime,
     timeframe: Timeframe,
     tickers: list[Ticker] | None = None,
-):
+) -> AccountReport:
     await db.connect()
 
     feed = CandlesFeed(start_at, end_at, timeframe, tickers)
@@ -583,15 +649,24 @@ async def backtest(
 
     await db.close()
 
+    return AccountReport(positions=exchange.positions, trading_start_at=start_at)
+
+
+async def main():
+    logger.info('Backtesting started')
+
+    account_report = await backtest(
+        strategy=TestStrategy(),
+        start_at=dt.datetime(2022, 4, 1),
+        end_at=dt.datetime(2022, 4, 10),
+        timeframe=Timeframe.M5,
+        tickers=['BTCUSDT', 'ETHUSDT'],
+        # tickers=None,
+    )
+    logger.info('Backtesting completed! Summary: %s', account_report.summary)
+    return account_report
+
 
 if __name__ == '__main__':
-    asyncio.run(
-        backtest(
-            strategy=TestStrategy(),
-            start_at=dt.datetime(2022, 4, 1),
-            end_at=dt.datetime(2022, 4, 10),
-            timeframe=Timeframe.M5,
-            tickers=['BTCUSDT', 'ETHUSDT'],
-            # tickers=None,
-        ),
-    )
+    asyncio.run(main())
+    
