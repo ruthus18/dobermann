@@ -87,6 +87,8 @@ class Position:
     exit_price: Decimal = None
     exit_comission: Decimal = settings.BINANCE_F_COMISSION
 
+    position_size: Decimal = Decimal(1)
+
     stop_loss: Decimal = None
     take_profit: Decimal = None
 
@@ -100,7 +102,7 @@ class Position:
         else:
             profit = ((1 - C_IN) * self.enter_price) - ((1 + C_OUT) * self.exit_price)
 
-        return RoundedDecimal(profit)
+        return RoundedDecimal(profit * self.position_size)
 
     @cached_property
     def profit_ratio(self) -> Decimal:
@@ -112,7 +114,7 @@ class Position:
         else:
             ratio = ((1 - C_IN) * self.enter_price) / ((1 + C_OUT) * self.exit_price)
 
-        return RoundedDecimal(ratio)
+        return RoundedDecimal(ratio * self.position_size)
 
     def as_dict(self) -> dict:
         return {
@@ -561,38 +563,122 @@ class Exchange:
         )
 
 
+class PositionEventType(str, enum.Enum):
+    OPEN = 'open'
+    CLOSE = 'close'
+
+
+@dataclass
+class PositionEvent:
+    position_index: int
+    type: PositionEventType
+    time: dt.datetime
+    price: Decimal
+    position_size: Decimal
+
+
 @dataclass
 class AccountReport:
     positions: list[Position]
     trading_start_at: dt.datetime
-    equity_initial_amount: Decimal = Decimal('1000')
+
+    initial_equity: Decimal = Decimal(1000)
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__} (profit={self.total_profit_ratio})'
+        return f'{self.__class__.__name__} (profit={self.cumulative_profit_ratio})'
 
-    # FIXME: Обрабатывать "одновременные сделки" (pos1.exit_time == pos2.exit_time)
+    @cached_property
+    def position_events(self) -> list[PositionEvent]:
+        events = []
+        for idx, position in enumerate(self.positions):
+            events.append(
+                PositionEvent(
+                    position_index=idx,
+                    type=PositionEventType.OPEN,
+                    time=position.enter_time,
+                    price=position.enter_price,
+                    position_size=position.position_size,
+                )
+            )
+            events.append(
+                PositionEvent(
+                    position_index=idx,
+                    type=PositionEventType.CLOSE,
+                    time=position.exit_time,
+                    price=position.exit_price,
+                    position_size=position.position_size,
+                )
+            )
+
+        return sorted(events, key=lambda e: e.time)
+
     @cached_property
     def equities(self) -> pd.Series:
-        _equities = pd.Series(dtype=object)
-        current_eq = self.equity_initial_amount
+        equities = pd.Series(dtype=object)
+        current_equity = self.initial_equity
 
         initial_time = self.trading_start_at.astimezone(settings.TIMEZONE)
-        _equities[initial_time] = current_eq
+        equities[initial_time] = current_equity
 
         for position in self.positions:
-            current_eq *= position.profit_ratio
-            _equities[position.exit_time] = round(current_eq, 2)
+            current_equity *= position.profit_ratio
+            equities[position.exit_time] = round(current_equity, 2)
 
-        return _equities
+        return equities
 
     @property
-    def total_profit_ratio(self):
-        return round(self.equities[-1] / self.equity_initial_amount, 8)
+    def cumulative_profit_ratio(self) -> Decimal:
+        return round(self.equities[-1] / self.initial_equity, 8)
 
     @cached_property
     def equity_graph(self) -> go.Figure:
-        return graphs.get_equity_graph(
-            go.Scatter(x=self.equities.index, y=self.equities.values, name='Equity', line=dict(color='#7658e0'))
+        return graphs.get_report_graph(
+            go.Scatter(x=self.equities.index, y=self.equities.values, name='Equity', line=dict(color='#7658e0')),
+        )
+
+    @cached_property
+    def leverage_used(self) -> pd.Series:
+        leverages = pd.Series(dtype=object)
+        current_leverage = Decimal(0)
+
+        for event in self.position_events:
+            if event.type == PositionEventType.OPEN:
+                current_leverage += event.position_size
+            else:
+                current_leverage -= event.position_size
+
+            leverages[event.time] = current_leverage
+
+        return leverages
+
+    @cached_property
+    def leverage_used_graph(self) -> go.Figure:
+        return graphs.get_report_graph(
+            go.Scatter(
+                x=self.leverage_used.index,
+                y=self.leverage_used.values,
+                name='Leverage Used',
+                line=dict(color='#7658e0')
+            ),
+            format_value=',.2f',
+        )
+
+    @cached_property
+    def drawdowns(self) -> pd.Series:
+        drawdowns = pd.Series(dtype=object)
+        max_equity = self.equities[0]
+
+        for time, equity in self.equities[1:].items():
+            max_equity = max(equity, max_equity)
+            drawdowns[time] = round(1 - (equity / max_equity), 8)
+
+        return drawdowns
+
+    @cached_property
+    def drawdowns_graph(self) -> pd.Series:
+        return graphs.get_report_graph(
+            go.Scatter(x=self.drawdowns.index, y=self.drawdowns.values, name='Drawdown', line=dict(color='#7658e0')),
+            format_value=',.4f',
         )
 
     @cached_property
@@ -603,16 +689,18 @@ class AccountReport:
     def summary(self):
         df = self.positions_df
         return {
-            'total_profit_ratio': self.total_profit_ratio,
+            'cumulative_profit_ratio': self.cumulative_profit_ratio,
             'mean_profit_ratio': RoundedDecimal(df.profit_ratio.mean()),
             'gmean_profit_ratio': RoundedDecimal(geometric_mean(df.profit_ratio)),
-            'max_dropdown': df.profit_ratio.min(),  # FIXME
+            'max_drawdown': self.drawdowns.max(),
             'total_trades': int(df.profit_ratio.count()),
             'success_trades': int(df.profit_ratio[df.profit_ratio > 1].count()),
             'fail_trades': int(df.profit_ratio[df.profit_ratio <= 1].count()),
             'success_trades_ratio': RoundedDecimal(
                 df.profit_ratio[df.profit_ratio > 1].count() / df.profit_ratio.count()
             ),
+            'avg_leverage_used': Decimal(round(self.leverage_used.mean(), 2)),
+            'max_leverage_used': self.leverage_used.max(),
         }
 
 

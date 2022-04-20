@@ -85,13 +85,13 @@ def draw_vline(graph: go.Figure, x: tp.Any, width: int = 1, opacity: float = 1) 
     graph.add_vline(x=x, line_color='#7658e0', line_width=width, opacity=opacity)
 
 
-def get_equity_graph(*subgraphs: tp.List[go.Scatter]):
+def get_report_graph(*subgraphs: tp.List[go.Scatter], format_value: str = ',.0f'):
     eq_graph = go.Figure(subgraphs)
     # eq_graph.update_traces(mode='lines+markers')
     eq_graph.update_layout(
         {'plot_bgcolor': '#ffffff', 'paper_bgcolor': '#ffffff', 'legend_orientation': "h"},
         showlegend=True,
-        yaxis_tickformat=',.0f',
+        yaxis_tickformat=format_value,
         yaxis_gridcolor='#f1f1f1',
         xaxis_showline=True,
         xaxis_mirror=True,
