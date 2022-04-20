@@ -658,7 +658,7 @@ class AccountReport:
                 x=self.leverage_used.index,
                 y=self.leverage_used.values,
                 name='Leverage Used',
-                line=dict(color='#7658e0')
+                line=dict(color='#58e4e0')
             ),
             format_value=',.2f',
         )
@@ -677,7 +677,7 @@ class AccountReport:
     @cached_property
     def drawdowns_graph(self) -> pd.Series:
         return graphs.get_report_graph(
-            go.Scatter(x=self.drawdowns.index, y=self.drawdowns.values, name='Drawdown', line=dict(color='#7658e0')),
+            go.Scatter(x=self.drawdowns.index, y=self.drawdowns.values, name='Drawdown', line=dict(color='#f766a0')),
             format_value=',.4f',
         )
 

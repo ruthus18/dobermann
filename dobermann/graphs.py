@@ -112,3 +112,6 @@ def get_report_graph(*subgraphs: tp.List[go.Scatter], format_value: str = ',.0f'
         xaxis_spikethickness=1,
     )
     return eq_graph
+
+
+go.Layout

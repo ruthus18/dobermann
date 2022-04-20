@@ -215,7 +215,7 @@ class AccountReport:
 
     @cached_property
     def equity_graph(self) -> go.Figure:
-        return graphs.get_equity_graph(
+        return graphs.get_report_graph(
             go.Scatter(x=self.equities.index, y=self.equities.values, name='Equity', line=dict(color='#7658e0'))
         )
 
