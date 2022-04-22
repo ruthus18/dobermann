@@ -20,10 +20,15 @@ import simplejson as json
 import zmq
 from zmq.asyncio import Context, Poller
 
-from . import db, graphs, utils
+from . import db, utils
+from . import visualization
 from .utils import RoundedDecimal
 from .binance_client import Timeframe
 from .config import settings
+
+if tp.TYPE_CHECKING:
+    import altair as alt
+
 
 logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')  # TODO: Затянуть либу loguru
@@ -185,7 +190,7 @@ class TestStrategy(Strategy):
 
     async def on_candle(self, candle: Candle):
         self.cnt += 1
-        if self.cnt % 100 != 0:
+        if self.cnt % 38 != 0:
             return
 
         if not self.has_position:
@@ -588,8 +593,26 @@ class AccountReport:
         return f'{self.__class__.__name__} (profit={self.cumulative_profit_ratio})'
 
     @cached_property
+    def equities(self) -> pd.Series:
+        equities = pd.Series(dtype=object)
+        current_equity = self.initial_equity
+
+        initial_time = self.trading_start_at.astimezone(settings.TIMEZONE)  # FIXME
+        equities[initial_time] = current_equity
+
+        for position in self.positions:
+            current_equity *= position.profit_ratio
+            equities[position.exit_time] = round(current_equity, 2)
+
+        return equities
+
+    @property
+    def cumulative_profit_ratio(self) -> Decimal:
+        return round(self.equities[-1] / self.initial_equity, 8)
+
+    @cached_property
     def position_events(self) -> list[PositionEvent]:
-        events = []
+        events: list[PositionEvent] = []
         for idx, position in enumerate(self.positions):
             events.append(
                 PositionEvent(
@@ -613,30 +636,6 @@ class AccountReport:
         return sorted(events, key=lambda e: e.time)
 
     @cached_property
-    def equities(self) -> pd.Series:
-        equities = pd.Series(dtype=object)
-        current_equity = self.initial_equity
-
-        initial_time = self.trading_start_at.astimezone(settings.TIMEZONE)
-        equities[initial_time] = current_equity
-
-        for position in self.positions:
-            current_equity *= position.profit_ratio
-            equities[position.exit_time] = round(current_equity, 2)
-
-        return equities
-
-    @property
-    def cumulative_profit_ratio(self) -> Decimal:
-        return round(self.equities[-1] / self.initial_equity, 8)
-
-    @cached_property
-    def equity_graph(self) -> go.Figure:
-        return graphs.get_report_graph(
-            go.Scatter(x=self.equities.index, y=self.equities.values, name='Equity', line=dict(color='#7658e0')),
-        )
-
-    @cached_property
     def leverage_used(self) -> pd.Series:
         leverages = pd.Series(dtype=object)
         current_leverage = Decimal(0)
@@ -652,21 +651,11 @@ class AccountReport:
         return leverages
 
     @cached_property
-    def leverage_used_graph(self) -> go.Figure:
-        return graphs.get_report_graph(
-            go.Scatter(
-                x=self.leverage_used.index,
-                y=self.leverage_used.values,
-                name='Leverage Used',
-                line=dict(color='#58e4e0')
-            ),
-            format_value=',.2f',
-        )
-
-    @cached_property
     def drawdowns(self) -> pd.Series:
         drawdowns = pd.Series(dtype=object)
         max_equity = self.equities[0]
+
+        drawdowns[self.equities.index[0]] = Decimal(0)
 
         for time, equity in self.equities[1:].items():
             max_equity = max(equity, max_equity)
@@ -675,11 +664,21 @@ class AccountReport:
         return drawdowns
 
     @cached_property
-    def drawdowns_graph(self) -> pd.Series:
-        return graphs.get_report_graph(
-            go.Scatter(x=self.drawdowns.index, y=self.drawdowns.values, name='Drawdown', line=dict(color='#f766a0')),
-            format_value=',.4f',
+    def _df_for_visualization(self) -> pd.DataFrame:
+        return (
+            pd.DataFrame({
+                'Equity': self.equities.astype('float64'),
+                'Drawdown': self.drawdowns.astype('float64'),
+                'Leverage Used': self.leverage_used.astype('float64')
+            })
+            .reset_index()
+            .fillna(method='ffill')
+            .rename(columns={'index': 'Time'})
         )
+
+    @property
+    def equity_chart(self) -> 'alt.VConcatChart':
+        return visualization.get_extended_equity_chart(self._df_for_visualization)
 
     @cached_property
     def positions_df(self) -> pd.DataFrame:
