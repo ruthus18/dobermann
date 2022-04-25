@@ -47,7 +47,9 @@ async def update_assets():
 timeframe_to_delta = {
     Timeframe.M1: dt.timedelta(minutes=1),
     Timeframe.M5: dt.timedelta(minutes=5),
+    Timeframe.M15: dt.timedelta(minutes=15),
     Timeframe.H1: dt.timedelta(hours=1),
+    Timeframe.D1: dt.timedelta(days=1),
 }
 
 
@@ -194,8 +196,16 @@ async def _main():
     logger.info('Updating assets...')
     await update_assets()
 
+    logger.info('Updating 1D candles...')
+    await update_historical_candles(Timeframe.D1)
+    await db.close()
+
     logger.info('Updating 1H candles...')
     await update_historical_candles(Timeframe.H1)
+    await db.close()
+
+    logger.info('Updating 15M candles...')
+    await update_historical_candles(Timeframe.M15)
     await db.close()
 
     logger.info('Updating 5M candles...')
