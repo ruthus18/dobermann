@@ -185,3 +185,23 @@ def get_drawdown_chart(df: pd.DataFrame, hover_selection: alt.Selection | None =
     ).properties(
         title='Drawdown', width=1000, height=100
     )
+
+
+def get_candles_chart(df: pd.DataFrame) -> alt.LayerChart:
+    open_close_color = alt.condition(
+        'datum.open <= datum.close', alt.value('#06982d'), alt.value('#ae1325')
+    )
+    base = alt.Chart(df).encode(alt.X('open_time:T'), color=open_close_color)
+    rule = base.mark_rule().encode(
+        alt.Y(
+            'low:Q',
+            title='Price',
+            scale=alt.Scale(zero=False),
+        ),
+        alt.Y2('high:Q')
+    )
+    bar = base.mark_bar().encode(
+        alt.Y('open:Q'),
+        alt.Y2('close:Q')
+    )
+    return (rule + bar).properties(width=1200, height=700).interactive()
