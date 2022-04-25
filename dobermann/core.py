@@ -590,7 +590,7 @@ class AccountReport:
     initial_equity: Decimal = Decimal(1000)
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__} (profit={self.cumulative_profit_ratio})'
+        return f'{self.__class__.__name__} (profit={self.rate_of_return})'
 
     @cached_property
     def equities(self) -> pd.Series:
@@ -607,7 +607,7 @@ class AccountReport:
         return equities
 
     @property
-    def cumulative_profit_ratio(self) -> Decimal:
+    def rate_of_return(self) -> Decimal:
         return round(self.equities[-1] / self.initial_equity, 8)
 
     @cached_property
@@ -710,6 +710,7 @@ async def backtest(
     timeframe: Timeframe,
     tickers: list[Ticker] | None = None,
 ) -> AccountReport:
+    logger.info('Backtesting started')
     await db.connect()
 
     feed = CandlesFeed(start_at, end_at, timeframe, tickers)
@@ -735,14 +736,13 @@ async def backtest(
     feed.close()
 
     await db.close()
+    logger.info('Backtesting complete!')
 
     return AccountReport(positions=exchange.positions, trading_start_at=start_at)
 
 
-async def main():
-    logger.info('Backtesting started')
-
-    account_report = await backtest(
+async def main() -> AccountReport:
+    return await backtest(
         strategy=TestStrategy(),
         start_at=dt.datetime(2022, 4, 1),
         end_at=dt.datetime(2022, 4, 10),
@@ -750,8 +750,6 @@ async def main():
         tickers=['BTCUSDT', 'ETHUSDT'],
         # tickers=None,
     )
-    logger.info('Backtesting completed! Summary: %s', account_report.summary)
-    return account_report
 
 
 if __name__ == '__main__':
