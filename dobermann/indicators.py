@@ -14,6 +14,29 @@ from .utils import OptDecimal, RoundedDecimal
 CACHE_SERIES = False
 
 
+class SMA:
+    def __init__(self, size: int):
+        self.size = size
+
+        self.s_values = pd.Series(dtype=object)
+        self.s_sma = pd.Series(dtype='float64')
+
+    def calculate(self, time: dt.datetime, value: Decimal) -> Decimal | None:
+        self.s_values[time] = value
+
+        if len(self.s_values) < self.size:
+            return None
+
+        current_sma = self.s_values.tail(self.size).mean()
+        self.s_sma[time] = current_sma
+
+        return current_sma
+
+    @property
+    def s(self) -> pd.Series:
+        return self.s_sma
+
+
 class EMA:
     def __init__(self, size: int):
         self.size = size
