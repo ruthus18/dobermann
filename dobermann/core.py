@@ -590,7 +590,7 @@ class AccountReport:
     initial_equity: Decimal = Decimal(1000)
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__} (profit={self.rate_of_return})'
+        return f'{self.__class__.__name__} (profit={self.profit_ratio})'
 
     @cached_property
     def equities(self) -> pd.Series:
@@ -607,7 +607,7 @@ class AccountReport:
         return equities
 
     @property
-    def rate_of_return(self) -> Decimal:
+    def profit_ratio(self) -> Decimal:
         return round(self.equities[-1] / self.initial_equity, 8)
 
     @cached_property
@@ -688,7 +688,7 @@ class AccountReport:
     def summary(self):
         df = self.positions_df
         return {
-            'cumulative_profit_ratio': self.cumulative_profit_ratio,
+            'profit_ratio': self.profit_ratio,
             'mean_profit_ratio': RoundedDecimal(df.profit_ratio.mean()),
             'gmean_profit_ratio': RoundedDecimal(geometric_mean(df.profit_ratio)),
             'max_drawdown': self.drawdowns.max(),
