@@ -1,14 +1,8 @@
+import math
 import datetime as dt
-import enum
-import typing as tp
-from abc import ABC, abstractmethod
-from decimal import Decimal
 
 import numpy as np
 import pandas as pd
-
-from .binance_client import Candle
-from .utils import OptDecimal, RoundedDecimal
 
 
 # True for live purposes, False for research
@@ -16,6 +10,8 @@ MEMORY_EFFICIENT = False
 
 
 class SMA:
+    """Simple Moving Average"""
+
     def __init__(self, size: int):
         self.size = size
 
@@ -35,6 +31,8 @@ class SMA:
 
 
 class WMA:
+    """Weighted Moving Average"""
+
     def __init__(self, size: int):
         self.size = size
 
@@ -56,6 +54,8 @@ class WMA:
 
 
 class EMA:
+    """Exponential Moving Average"""
+
     def __init__(self, size: int):
         self.size = size
 
@@ -78,6 +78,45 @@ class EMA:
         self.s[time] = current_ema
 
         return current_ema
+
+
+class HMA:
+    """Hull Moving Average"""
+
+    def __init__(self, size: int):
+        self.size_long = size
+        self.size_short = round(size / 2)
+        self.size_smooth = round(math.sqrt(size))
+
+        self.s_values = pd.Series(dtype='float64')
+        self.s_raw = pd.Series(dtype='float64')
+        self.s = pd.Series(dtype='float64')
+
+        self.weights_long = np.arange(1, self.size_long + 1)
+        self.weights_short = np.arange(1, self.size_short + 1)
+        self.weights_smooth = np.arange(1, self.size_smooth + 1)
+
+        print(self.size_long, self.size_short, self.size_smooth)
+
+    def calculate(self, time: dt.datetime, value: float) -> float | None:
+        self.s_values[time] = value
+
+        if len(self.s_values) < self.size_long:
+            return None
+
+        wma_long = np.average(self.s_values.tail(self.size_long), weights=self.weights_long)
+        wma_short = np.average(self.s_values.tail(self.size_short), weights=self.weights_short)
+
+        raw_hma = (2 * wma_short) - wma_long
+        self.s_raw[time] = raw_hma
+
+        if len(self.s_raw) < self.size_smooth:
+            return None
+
+        current_hma = np.average(self.s_raw.tail(self.size_smooth), weights=self.weights_smooth)
+        self.s[time] = current_hma
+
+        return current_hma
 
 
 # class BollingerBands(Indicator):
