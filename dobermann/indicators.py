@@ -22,13 +22,13 @@ class SMA:
         self.s_values = pd.Series(dtype='float64')
         self.s = pd.Series(dtype='float64')
 
-    def calculate(self, time: dt.datetime, value: Decimal) -> Decimal | None:
+    def calculate(self, time: dt.datetime, value: float) -> Decimal | None:
         self.s_values[time] = value
 
         if len(self.s_values) < self.size:
             return None
 
-        current_sma = self.s_values.tail(self.size).mean()
+        current_sma = np.average(self.s_values.tail(self.size))
         self.s[time] = current_sma
 
         return current_sma
@@ -46,16 +46,16 @@ class EMA:
     def _calc_multiplier(self) -> float:
         return round(2 / (self.size + 1), 4)
 
-    def calculate(self, time: dt.datetime, value: Decimal) -> tp.Optional[Decimal]:
+    def calculate(self, time: dt.datetime, value: float) -> tp.Optional[Decimal]:
         self.s_values[time] = value
 
         if len(self.s_values) < self.size:
             return None
 
         elif len(self.s) == 0:
-            current_ema = self.s_values.tail(self.size).mean()
+            current_ema = np.average(self.s_values.tail(self.size))
         else:
-            current_ema = (float(value) * self.multiplier) + (self.s[-1] * (1 - self.multiplier))
+            current_ema = (value * self.multiplier) + (self.s[-1] * (1 - self.multiplier))
 
         self.s[time] = current_ema
 
