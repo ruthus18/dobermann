@@ -96,8 +96,6 @@ class HMA:
         self.weights_short = np.arange(1, self.size_short + 1)
         self.weights_smooth = np.arange(1, self.size_smooth + 1)
 
-        print(self.size_long, self.size_short, self.size_smooth)
-
     def calculate(self, time: dt.datetime, value: float) -> float | None:
         self.s_values[time] = value
 
@@ -117,6 +115,38 @@ class HMA:
         self.s[time] = current_hma
 
         return current_hma
+
+
+class ATR:
+    """Average True Range"""
+    def __init__(self, size: int):
+        self.size = size
+
+        self.prev_candle: dict = None
+        self.s_true_range = pd.Series(dtype='float64')
+        self.s = pd.Series(dtype='float64')
+
+    def calculate(self, candle: dict) -> float | None:
+        if not self.prev_candle:
+            self.prev_candle = candle
+            return None
+
+        true_range = float(max(
+            (candle['high'] - candle['low']),
+            abs(candle['high'] - self.prev_candle['close']),
+            abs(candle['low'] - self.prev_candle['close'])
+        ))
+        self.prev_candle = candle
+
+        self.s_true_range[candle['open_time']] = true_range
+
+        if len(self.s_true_range) < self.size:
+            return None
+
+        current_atr = np.average(self.s_true_range.tail(self.size))
+        self.s[candle['open_time']] = current_atr
+
+        return current_atr
 
 
 # class BollingerBands(Indicator):
