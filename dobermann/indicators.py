@@ -22,7 +22,7 @@ class SMA:
         self.s_values = pd.Series(dtype='float64')
         self.s = pd.Series(dtype='float64')
 
-    def calculate(self, time: dt.datetime, value: float) -> Decimal | None:
+    def calculate(self, time: dt.datetime, value: float) -> float | None:
         self.s_values[time] = value
 
         if len(self.s_values) < self.size:
@@ -34,6 +34,27 @@ class SMA:
         return current_sma
 
 
+class WMA:
+    def __init__(self, size: int):
+        self.size = size
+
+        self.s_values = pd.Series(dtype='float64')
+        self.s = pd.Series(dtype='float64')
+
+        self.weights = np.arange(1, size + 1)
+
+    def calculate(self, time: dt.datetime, value: float) -> float | None:
+        self.s_values[time] = value
+
+        if len(self.s_values) < self.size:
+            return None
+
+        current_wma = np.average(self.s_values.tail(self.size), weights=self.weights)
+        self.s[time] = current_wma
+
+        return current_wma
+
+
 class EMA:
     def __init__(self, size: int):
         self.size = size
@@ -41,12 +62,9 @@ class EMA:
         self.s_values = pd.Series(dtype='float64')
         self.s = pd.Series(dtype='float64')
 
-        self.multiplier = self._calc_multiplier()
+        self.multiplier = round(2 / (self.size + 1), 4)
 
-    def _calc_multiplier(self) -> float:
-        return round(2 / (self.size + 1), 4)
-
-    def calculate(self, time: dt.datetime, value: float) -> tp.Optional[Decimal]:
+    def calculate(self, time: dt.datetime, value: float) -> float | None:
         self.s_values[time] = value
 
         if len(self.s_values) < self.size:
