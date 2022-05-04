@@ -12,7 +12,6 @@ tortoise-orm = "^0.19.0"
 aerich = "^0.6.2"
 pydantic = {version = "^1.8.2", extras = ["dotenv"]}
 python-binance = "^1.0.15"
-plotly = "^5.7.0"
 numpy = {version = "^1.22.0", python = ">=3.9,<3.11"}
 pandas = "^1.4.2"
 tqdm = "^4.64.0"
@@ -44,7 +43,12 @@ migrate = "aerich upgrade"
 
 lab = "jupyter lab"
 sync = "python -m dobermann sync"
-charts = 'npm run start --prefix charts_frontend'
+
+_build_charts = 'npm run build --prefix lightweight_charts'
+_run_charts = 'python -m http.server 9999 --bind 127.0.0.1 --directory lightweight_charts/dist'
+charts_prod = ['_build_charts', '_run_charts']
+
+charts = 'npm run start --prefix lightweight_charts'
 
 _flake8 = 'flake8 --statistics --show-source .'
 _isort = 'isort -c .'

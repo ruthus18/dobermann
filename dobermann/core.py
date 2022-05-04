@@ -21,7 +21,7 @@ import zmq
 from zmq.asyncio import Context, Poller
 
 from . import db, utils
-from . import visualization
+from . import charts
 from .utils import RoundedDecimal
 from .binance_client import Timeframe
 from .config import settings
@@ -685,7 +685,7 @@ class AccountReport:
 
     @property
     def equity_chart(self) -> 'alt.VConcatChart':
-        return visualization.get_extended_equity_chart(self._df_for_visualization)
+        return charts.get_extended_equity_chart(self._df_for_visualization)
 
     @cached_property
     def positions_df(self) -> pd.DataFrame:
