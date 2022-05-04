@@ -1,3 +1,4 @@
+import logging
 import math
 import datetime as dt
 import typing as tp
@@ -5,9 +6,16 @@ import typing as tp
 import numpy as np
 import pandas as pd
 
+from .core import Candle
+
+from .config import settings
+
+
+logger = logging.getLogger(__name__)
+
 
 # True for live purposes, False for research
-MEMORY_EFFICIENT = False
+MEMORY_EFFICIENT = settings.MEMORY_EFFICIENT
 
 
 class SMA:
@@ -27,6 +35,10 @@ class SMA:
 
         current_sma = np.average(self.s_values.tail(self.size))
         self.s[time] = current_sma
+
+        if MEMORY_EFFICIENT:
+            self.s_values = self.s_values.tail(self.size - 1)
+            self.s = self.s.tail(0)
 
         return current_sma
 
@@ -50,6 +62,10 @@ class WMA:
 
         current_wma = np.average(self.s_values.tail(self.size), weights=self.weights)
         self.s[time] = current_wma
+
+        if MEMORY_EFFICIENT:
+            self.s_values = self.s_values.tail(self.size - 1)
+            self.s = self.s.tail(0)
 
         return current_wma
 
@@ -77,6 +93,10 @@ class EMA:
             current_ema = (value * self.multiplier) + (self.s[-1] * (1 - self.multiplier))
 
         self.s[time] = current_ema
+
+        if MEMORY_EFFICIENT:
+            self.s_values = self.s_values.tail(0)
+            self.s = self.s.tail(1)
 
         return current_ema
 
@@ -127,25 +147,25 @@ class ATR:
         self.s_true_range = pd.Series(dtype='float64')
         self.s = pd.Series(dtype='float64')
 
-    def calculate(self, candle: dict) -> float | None:
+    def calculate(self, candle: Candle) -> float | None:
         if not self.prev_candle:
             self.prev_candle = candle
             return None
 
         true_range = float(max(
-            (candle['high'] - candle['low']),
-            abs(candle['high'] - self.prev_candle['close']),
-            abs(candle['low'] - self.prev_candle['close'])
+            (candle.high - candle.low),
+            abs(candle.high - self.prev_candle.close),
+            abs(candle.low - self.prev_candle.close)
         ))
         self.prev_candle = candle
 
-        self.s_true_range[candle['open_time']] = true_range
+        self.s_true_range[candle.open_time] = true_range
 
         if len(self.s_true_range) < self.size:
             return None
 
         current_atr = np.average(self.s_true_range.tail(self.size))
-        self.s[candle['open_time']] = current_atr
+        self.s[candle.open_time] = current_atr
 
         return current_atr
 
@@ -177,35 +197,36 @@ class HalfTrend:
 
         self.s = pd.Series(dtype='int')
 
-    def calculate(self, candle: dict) -> tp.Tuple[float | None, float | None, float | None, float | None]:
+    def calculate(self, candle: Candle) -> tp.Tuple[float | None, float | None, float | None, float | None]:
         signal = self._calculate(candle)
 
-        if signal is None:
-            self.s[candle['open_time']] = 0
-        else:
-            self.s[candle['open_time']] = signal
+        if not MEMORY_EFFICIENT:
+            if signal is None:
+                self.s[candle.open_time] = 0
+            else:
+                self.s[candle.open_time] = signal
 
         self.prev_candle = candle
         return signal
 
-    def _calculate(self, candle: dict) -> tp.Tuple[float | None, float | None, float | None, float | None]:
-        time = candle['open_time']
+    def _calculate(self, candle: Candle) -> tp.Tuple[float | None, float | None, float | None, float | None]:
+        time = candle.open_time
 
-        current_low_sma = self.low_sma.calculate(time, candle['low'])
-        current_high_sma = self.high_sma.calculate(time, candle['high'])
+        current_low_sma = self.low_sma.calculate(time, candle.low)
+        current_high_sma = self.high_sma.calculate(time, candle.high)
 
         if not current_low_sma:
             return None
 
         # TODO: Нужно разобраться, для чего нужны эти условия вместо candle['high'/'low']
-        local_high = max(candle['high'], self.prev_candle['high'])
-        local_low = min(candle['low'], self.prev_candle['low'])
+        local_high = max(candle.high, self.prev_candle.high)
+        local_low = min(candle.low, self.prev_candle.low)
 
         if self.trend == TREND_UP:
             self.max_low_price = max(self.max_low_price, local_low)
 
             # Check whether uptrend is end
-            if (current_high_sma < self.max_low_price) and (candle['close'] < self.prev_candle['low']):
+            if (current_high_sma < self.max_low_price) and (candle.close < self.prev_candle.low):
                 self.trend = TREND_DOWN
                 self.min_high_price = local_high
 
@@ -215,7 +236,7 @@ class HalfTrend:
             self.min_high_price = min(self.min_high_price, local_high)
 
             # Check whether downtrend is end
-            if (current_low_sma > self.min_high_price) and (candle['close'] > self.prev_candle['high']):
+            if (current_low_sma > self.min_high_price) and (candle.close > self.prev_candle.high):
                 self.trend = TREND_UP
                 self.max_low_price = local_low
 

@@ -93,6 +93,8 @@ class Settings(BaseSettings):
         },
     }
 
+    MEMORY_EFFICIENT: bool = True
+
     class Config:
         env_file = '.env'
         allow_mutation = False

@@ -57,18 +57,26 @@ TZ = pytz.timezone(settings.TZ_NAME)
 class Candle:
     timeframe: Timeframe
     open_time: dt.datetime
-    open: Decimal
-    close: Decimal
-    low: Decimal
-    high: Decimal
-    volume: Decimal
+    open: float
+    close: float
+    low: float
+    high: float
+    volume: float
 
     @classmethod
     def from_dict(cls, d: dict) -> 'Candle':
         return cls(**{
             **d,
-            'open_time': d['open_time'].astimezone(TZ)
+            'open_time': d['open_time'].astimezone(TZ),
+            'open': float(d['open']),
+            'close': float(d['close']),
+            'high': float(d['high']),
+            'low': float(d['low']),
+            'volume': float(d['volume']),
         })
+
+
+class StrategyExecutionError(Exception): ...
 
 
 class PositionType(str, enum.Enum):
@@ -77,59 +85,6 @@ class PositionType(str, enum.Enum):
 
     def __str__(self):
         return self.value
-
-
-@dataclass
-class Position:
-    ticker: str
-    type: PositionType
-
-    enter_time: dt.datetime
-    enter_price: Decimal
-    enter_comission: Decimal = settings.BINANCE_F_COMISSION
-
-    exit_time: dt.datetime = None
-    exit_price: Decimal = None
-    exit_comission: Decimal = settings.BINANCE_F_COMISSION
-
-    position_size: Decimal = Decimal(1)
-
-    stop_loss: Decimal = None
-    take_profit: Decimal = None
-
-    @cached_property
-    def profit(self) -> Decimal:
-        C_IN = self.enter_comission
-        C_OUT = self.exit_comission
-
-        if self.type == PositionType.LONG:
-            profit = ((1 - C_OUT) * self.exit_price) - ((1 + C_IN) * self.enter_price)
-        else:
-            profit = ((1 - C_IN) * self.enter_price) - ((1 + C_OUT) * self.exit_price)
-
-        return RoundedDecimal(profit * self.position_size)
-
-    @cached_property
-    def profit_ratio(self) -> Decimal:
-        C_IN = self.enter_comission
-        C_OUT = self.exit_comission
-
-        if self.type == PositionType.LONG:
-            ratio = ((1 - C_OUT) * self.exit_price) / ((1 + C_IN) * self.enter_price)
-        else:
-            ratio = ((1 - C_IN) * self.enter_price) / ((1 + C_OUT) * self.exit_price)
-
-        return RoundedDecimal(ratio * self.position_size)
-
-    def as_dict(self) -> dict:
-        return {
-            **asdict(self),
-            'profit': self.profit,
-            'profit_ratio': self.profit_ratio,
-        }
-
-
-class StrategyExecutionError(Exception): ...
 
 
 class Strategy(ABC):
@@ -504,10 +459,61 @@ class ExchangeClient:
         await self.send_event('close_position', data)
 
 
+@dataclass
+class Position:
+    ticker: str
+    type: PositionType
+
+    enter_time: dt.datetime
+    enter_price: Decimal
+    enter_comission: Decimal = settings.BINANCE_F_COMISSION
+
+    exit_time: dt.datetime = None
+    exit_price: Decimal = None
+    exit_comission: Decimal = settings.BINANCE_F_COMISSION
+
+    position_size: Decimal = Decimal(1)
+
+    stop_loss: Decimal = None
+    take_profit: Decimal = None
+
+    @cached_property
+    def profit(self) -> Decimal:
+        C_IN = self.enter_comission
+        C_OUT = self.exit_comission
+
+        if self.type == PositionType.LONG:
+            profit = ((1 - C_OUT) * self.exit_price) - ((1 + C_IN) * self.enter_price)
+        else:
+            profit = ((1 - C_IN) * self.enter_price) - ((1 + C_OUT) * self.exit_price)
+
+        return RoundedDecimal(profit * self.position_size)
+
+    @cached_property
+    def profit_ratio(self) -> Decimal:
+        C_IN = self.enter_comission
+        C_OUT = self.exit_comission
+
+        if self.type == PositionType.LONG:
+            ratio = ((1 - C_OUT) * self.exit_price) / ((1 + C_IN) * self.enter_price)
+        else:
+            ratio = ((1 - C_IN) * self.enter_price) / ((1 + C_OUT) * self.exit_price)
+
+        return RoundedDecimal(ratio * self.position_size)
+
+    def as_dict(self) -> dict:
+        return {
+            **asdict(self),
+            'profit': self.profit,
+            'profit_ratio': self.profit_ratio,
+        }
+
+
 class Exchange:
 
-    def __init__(self):
+    def __init__(self, position_size: Decimal = Decimal(1)):
         self._positions: dict[PositionID, Position] = {}
+        self.position_size = position_size
 
         self.log = logger.getChild('exchange')
 
@@ -542,6 +548,7 @@ class Exchange:
             type=PositionType(event_data['type']),
             enter_time=dt.datetime.fromisoformat(event_data['time']).astimezone(settings.TIMEZONE),
             enter_price=Decimal(event_data['price']),
+            position_size=self.position_size,
         )
 
     def close_position(self, event_data: dict):
@@ -709,6 +716,8 @@ async def backtest(
     end_at: dt.datetime,
     timeframe: Timeframe,
     tickers: list[Ticker] | None = None,
+    *,
+    position_size: Decimal = Decimal(1)
 ) -> AccountReport:
     logger.info('Backtesting started')
     await db.connect()
@@ -716,7 +725,7 @@ async def backtest(
     feed = CandlesFeed(start_at, end_at, timeframe, tickers)
     actual_tickers = await feed.get_actual_tickers()
 
-    exchange = Exchange()
+    exchange = Exchange(position_size=position_size)
     t_exchange = asyncio.create_task(exchange.process_orders())
 
     manager = WorkManager(actual_tickers, strategy)
