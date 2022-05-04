@@ -44,6 +44,7 @@ migrate = "aerich upgrade"
 
 lab = "jupyter lab"
 sync = "python -m dobermann sync"
+charts = 'npm run start --prefix charts_frontend'
 
 _flake8 = 'flake8 --statistics --show-source .'
 _isort = 'isort -c .'

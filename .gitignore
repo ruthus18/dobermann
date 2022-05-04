@@ -15,3 +15,7 @@ __pycache__/
 
 research
 dobermann/data
+
+node_modules/
+dist/
+.parcel-cache/
