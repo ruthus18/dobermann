@@ -1,5 +1,6 @@
 import math
 import datetime as dt
+import typing as tp
 
 import numpy as np
 import pandas as pd
@@ -147,6 +148,83 @@ class ATR:
         self.s[candle['open_time']] = current_atr
 
         return current_atr
+
+
+TREND_UP = 1
+TREND_DOWN = -1
+
+
+class HalfTrend:
+    """HalfTrend indicator
+    
+    PineScript Implementation: https://tradingview.com/script/U1SJ8ubc-HalfTrend/
+    """
+    def __init__(self, amplitude: int = 2, channel_deviation: int = 2):
+        self.amplitude = amplitude
+        self.channel_deviation = channel_deviation
+
+        self.atr = ATR(100)
+        self.prev_candle: dict = None
+        self.trend = TREND_UP
+
+        # Uptrend data
+        self.high_sma = SMA(size=self.amplitude)
+        self.max_low_price = float('-inf')
+
+        # Downtrend data
+        self.low_sma = SMA(size=self.amplitude)
+        self.min_high_price = float('inf')
+
+        self.s = pd.Series(dtype='int')
+
+    def calculate(self, candle: dict) -> tp.Tuple[float | None, float | None, float | None, float | None]:
+        signal = self._calculate(candle)
+
+        if signal is None:
+            self.s[candle['open_time']] = 0
+        else:
+            self.s[candle['open_time']] = signal
+
+        self.prev_candle = candle
+        return signal
+
+    def _calculate(self, candle: dict) -> tp.Tuple[float | None, float | None, float | None, float | None]:
+        time = candle['open_time']
+
+        current_low_sma = self.low_sma.calculate(time, candle['low'])
+        current_high_sma = self.high_sma.calculate(time, candle['high'])
+
+        if not current_low_sma:
+            return None
+
+        # TODO: Нужно разобраться, для чего нужны эти условия вместо candle['high'/'low']
+        local_high = max(candle['high'], self.prev_candle['high'])
+        local_low = min(candle['low'], self.prev_candle['low'])
+
+        if self.trend == TREND_UP:
+            self.max_low_price = max(self.max_low_price, local_low)
+
+            # Check whether uptrend is end
+            if (current_high_sma < self.max_low_price) and (candle['close'] < self.prev_candle['low']):
+                self.trend = TREND_DOWN
+                self.min_high_price = local_high
+
+                return TREND_DOWN
+
+        elif self.trend == TREND_DOWN:
+            self.min_high_price = min(self.min_high_price, local_high)
+
+            # Check whether downtrend is end
+            if (current_low_sma > self.min_high_price) and (candle['close'] > self.prev_candle['high']):
+                self.trend = TREND_UP
+                self.max_low_price = local_low
+
+                return TREND_UP
+
+        else:
+            raise RuntimeError()
+
+        return None
 
 
 # class BollingerBands(Indicator):
