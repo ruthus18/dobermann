@@ -1,5 +1,6 @@
 import asyncio
 import datetime as dt
+import pytz
 import decimal
 import logging
 import typing as tp
@@ -16,6 +17,9 @@ logger = logging.getLogger(__name__)
 
 
 decimal.getcontext().rounding = decimal.ROUND_DOWN
+
+
+TZ = pytz.timezone(settings.TZ_NAME)
 
 
 class Model(BaseModel):
@@ -58,7 +62,7 @@ class FuturesAsset(Asset):
 
     @validator('onboard_date')
     def convert_ts(cls, value: tp.Union[dt.datetime, str]) -> dt.datetime:
-        return dt.datetime.fromtimestamp(value / 1000).astimezone(settings.TIMEZONE)
+        return dt.datetime.fromtimestamp(value / 1000).astimezone(TZ)
 
 
 class Candle(Model):
@@ -72,7 +76,7 @@ class Candle(Model):
     @validator('open_time')
     @classmethod
     def convert_tz(cls, value: tp.Union[dt.datetime, str]):
-        return value.astimezone(settings.TIMEZONE)
+        return value.astimezone(TZ)
 
 
 class OrderSide(StrEnum):

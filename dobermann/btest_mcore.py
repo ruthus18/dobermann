@@ -2,6 +2,8 @@ import asyncio
 import datetime as dt
 import enum
 import logging.config
+import pytz
+import time
 import typing as tp
 import uuid
 from abc import ABC, abstractmethod
@@ -13,22 +15,17 @@ from decimal import Decimal
 from functools import cached_property
 from statistics import geometric_mean
 
+import altair as alt
 import pandas as pd
-import plotly.graph_objects as go
-import pytz
 import simplejson as json
 import zmq
 from zmq.asyncio import Context, Poller
 
-from . import db, utils
-from . import charts
-from .utils import RoundedDecimal
+from . import charts, db, utils
 from .binance_client import Timeframe
 from .config import settings
-
-if tp.TYPE_CHECKING:
-    import altair as alt
-
+from .types import Candle
+from .utils import RoundedDecimal
 
 logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')  # TODO: Затянуть либу loguru
@@ -38,6 +35,8 @@ Ticker = str
 AssetID = int
 PositionID = str
 SignalType = tp.TypeVar('SignalType')
+
+TZ = pytz.timezone(settings.TZ_NAME)
 
 
 _ZMQ_URL = 'tcp://127.0.0.1:{port}'
@@ -49,31 +48,6 @@ WORKERS_RESPONDER_URL = _ZMQ_URL.format(port=22225)
 
 EVENT_ALL_CANDLES_SENT = b'-1'
 EVENT_ALL_ORDERS_SENT = b'-2'
-
-TZ = pytz.timezone(settings.TZ_NAME)
-
-
-@dataclass(slots=True)
-class Candle:
-    timeframe: Timeframe
-    open_time: dt.datetime
-    open: float
-    close: float
-    low: float
-    high: float
-    volume: float
-
-    @classmethod
-    def from_dict(cls, d: dict) -> 'Candle':
-        return cls(**{
-            **d,
-            'open_time': d['open_time'].astimezone(TZ),
-            'open': float(d['open']),
-            'close': float(d['close']),
-            'high': float(d['high']),
-            'low': float(d['low']),
-            'volume': float(d['volume']),
-        })
 
 
 class StrategyExecutionError(Exception): ...
@@ -166,12 +140,12 @@ class CandlesFeed:
         if start_at.tzinfo:
             self.start_at = start_at
         else:
-            self.start_at = start_at.astimezone(settings.TIMEZONE)
+            self.start_at = start_at.astimezone(TZ)
 
         if end_at.tzinfo:
             self.end_at = end_at
         else:
-            self.end_at = end_at.astimezone(settings.TIMEZONE)
+            self.end_at = end_at.astimezone(TZ)
 
         self.timeframe = timeframe
         self.tickers = tickers
@@ -240,6 +214,8 @@ class CandlesFeed:
                 cursor = await conn.cursor(query, *args)
 
                 self.log.debug('Sending candles...')
+                _perf_start = time.time()
+
                 while candles_batch := await cursor.fetch(1000):
                     for candle in candles_batch:
 
@@ -250,6 +226,8 @@ class CandlesFeed:
                         ))
 
                         self._total_candles_sent += 1
+            
+            logger.debug('Preparing candles time: %.2fs', time.time() - _perf_start)
 
         await self.candles_sender.send(EVENT_ALL_CANDLES_SENT)
         self.log.debug('All candles sent: total=%s', self._total_candles_sent)
@@ -313,7 +291,7 @@ class WorkManager:
         self.log.debug('Waiting workers to complete...')
 
         await asyncio.wait(self.workers)
-        self.log.debug('Workers compelted')
+        self.log.debug('All workers compelted')
 
     async def shutdown_workers(self):
         if not self.workers:
@@ -546,7 +524,7 @@ class Exchange:
         self._positions[position_id] = Position(
             ticker=event_data['ticker'],
             type=PositionType(event_data['type']),
-            enter_time=dt.datetime.fromisoformat(event_data['time']).astimezone(settings.TIMEZONE),
+            enter_time=dt.datetime.fromisoformat(event_data['time']).astimezone(TZ),
             enter_price=Decimal(event_data['price']),
             position_size=self.position_size,
         )
@@ -555,7 +533,7 @@ class Exchange:
         position_id = event_data['position_id']
         position = self._positions[position_id]
 
-        position.exit_time = dt.datetime.fromisoformat(event_data['time']).astimezone(settings.TIMEZONE)
+        position.exit_time = dt.datetime.fromisoformat(event_data['time']).astimezone(TZ)
         position.exit_price = Decimal(event_data['price'])
 
     async def complete(self):
@@ -604,7 +582,7 @@ class AccountReport:
         equities = pd.Series(dtype=object)
         current_equity = self.initial_equity
 
-        initial_time = self.trading_start_at.astimezone(settings.TIMEZONE)  # FIXME
+        initial_time = self.trading_start_at.astimezone(TZ)  # FIXME
         equities[initial_time] = current_equity
 
         for position in self.positions:
@@ -670,9 +648,9 @@ class AccountReport:
 
         return drawdowns
 
-    @cached_property
-    def _df_for_visualization(self) -> pd.DataFrame:
-        return (
+    @property
+    def equity_chart(self) -> alt.VConcatChart:
+        chart_df = (
             pd.DataFrame({
                 'Equity': self.equities.astype('float64'),
                 'Drawdown': self.drawdowns.astype('float64'),
@@ -682,10 +660,7 @@ class AccountReport:
             .fillna(method='ffill')
             .rename(columns={'index': 'Time'})
         )
-
-    @property
-    def equity_chart(self) -> 'alt.VConcatChart':
-        return charts.get_extended_equity_chart(self._df_for_visualization)
+        return charts.get_extended_equity_chart(chart_df)
 
     @cached_property
     def positions_df(self) -> pd.DataFrame:
@@ -722,6 +697,8 @@ async def backtest(
     logger.info('Backtesting started')
     await db.connect()
 
+    _perf_start = time.time()
+
     feed = CandlesFeed(start_at, end_at, timeframe, tickers)
     actual_tickers = await feed.get_actual_tickers()
 
@@ -745,7 +722,7 @@ async def backtest(
     feed.close()
 
     await db.close()
-    logger.info('Backtesting complete!')
+    logger.info('Backtesting complete! Total time: %.2fs', time.time() - _perf_start)
 
     return AccountReport(positions=exchange.positions, trading_start_at=start_at)
 

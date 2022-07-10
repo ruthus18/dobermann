@@ -5,7 +5,7 @@ import pytest
 import zmq
 from zmq.asyncio import Context, Poller
 
-from dobermann import core
+from dobermann import btest_mcore
 from dobermann.utils import unpackb_candle
 
 
@@ -23,9 +23,9 @@ def expected_tickers():
 def feed(expected_tickers):
     start_at = dt.datetime(2022, 1, 1)
     end_at = dt.datetime(2022, 1, 2)
-    timeframe = core.Timeframe.H1
+    timeframe = btest_mcore.Timeframe.H1
 
-    feed = core.CandlesFeed(start_at, end_at, timeframe, expected_tickers)
+    feed = btest_mcore.CandlesFeed(start_at, end_at, timeframe, expected_tickers)
     yield feed
     feed.close()
 
@@ -34,9 +34,9 @@ def feed(expected_tickers):
 async def test_candles_feed__get_all_tickers():
     start_at = dt.datetime(2020, 1, 1)
     end_at = dt.datetime(2020, 1, 2)
-    timeframe = core.Timeframe.H1
+    timeframe = btest_mcore.Timeframe.H1
 
-    feed = core.CandlesFeed(start_at, end_at, timeframe, None)
+    feed = btest_mcore.CandlesFeed(start_at, end_at, timeframe, None)
     actual_tickers = await feed.get_actual_tickers()
 
     assert actual_tickers == {'BCHUSDT', 'BTCUSDT', 'ETHUSDT'}
@@ -53,7 +53,7 @@ async def test_candles_feed__get_specific_tickers(feed, expected_tickers):
 @pytest.mark.asyncio
 async def test_candles_feed__register_candle_recipients(zmq_ctx, feed, expected_tickers):
     registrator: zmq.Socket = zmq_ctx.socket(zmq.REP)
-    registrator.bind(core.FEED_REGISTRY_URL)
+    registrator.bind(btest_mcore.FEED_REGISTRY_URL)
 
     feed_registry_task = asyncio.create_task(feed.register_candle_recipients())
 
@@ -69,7 +69,7 @@ async def test_candles_feed__register_candle_recipients(zmq_ctx, feed, expected_
 @pytest.mark.asyncio
 async def test_candles_feed__send_candles(zmq_ctx, feed):
     candle_receiver = zmq_ctx.socket(zmq.SUB)
-    candle_receiver.connect(core.CANDLES_URL)
+    candle_receiver.connect(btest_mcore.CANDLES_URL)
     candle_receiver.subscribe(b'')
 
     candles_task = asyncio.create_task(feed.send_candles())
@@ -80,12 +80,12 @@ async def test_candles_feed__send_candles(zmq_ctx, feed):
             case [_, data]:  # ticker, data
                 candles.append(data)
 
-            case [core.EVENT_ALL_CANDLES_SENT]:
+            case [btest_mcore.EVENT_ALL_CANDLES_SENT]:
                 break
 
     await asyncio.wait((candles_task, ))
     assert feed._total_candles_sent == len(candles)
 
-    assert core.Candle(**unpackb_candle(candles[0]))
+    assert btest_mcore.Candle(**unpackb_candle(candles[0]))
 
     candle_receiver.close()

@@ -1,0 +1,5 @@
+* Починить инициализацию таймзоны через `config.settings`, возможно избавиться от pytz
+
+* Избавиться от pydantic.BaseSettings
+
+* Затянуть loguru

@@ -1,15 +1,14 @@
+import datetime as dt
 import logging
 import math
-import datetime as dt
 import typing as tp
+from decimal import Decimal
 
 import numpy as np
 import pandas as pd
 
-from .core import Candle
-
 from .config import settings
-
+from .types import Candle
 
 logger = logging.getLogger(__name__)
 
@@ -248,37 +247,37 @@ class HalfTrend:
         return None
 
 
-# class BollingerBands(Indicator):
+class BollingerBands:
 
-#     def __init__(self, sma_window: int = 20, stdev_size: int = 2):
-#         self.sma_window = sma_window
-#         self.stdev_size = stdev_size
+    def __init__(self, size: int = 20, stdev_size: int = 2):
+        self.size = size
+        self.stdev_size = stdev_size
 
-#         self.s_price = pd.Series(dtype=object)
+        self.s_price = pd.Series(dtype=object)
 
-#         self.s_sma = pd.Series(dtype=object)
-#         self.s_stdev = pd.Series(dtype=object)
-#         self.s_lower_band = pd.Series(dtype=object)
-#         self.s_upper_band = pd.Series(dtype=object)
+        self.s_sma = pd.Series(dtype=object)
+        self.s_stdev = pd.Series(dtype=object)
+        self.s_lower_band = pd.Series(dtype=object)
+        self.s_upper_band = pd.Series(dtype=object)
 
-#     def calculate(self, candle: Candle) -> tp.Tuple[OptDecimal, OptDecimal, OptDecimal]:
-#         open_time = candle.open_time
-#         self.s_price[open_time] = candle.close
+    def calculate(self, candle: Candle) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+        open_time = candle.open_time
+        self.s_price[open_time] = candle.close
 
-#         if len(self.s_price) < self.sma_window:
-#             return None, None, None
+        if len(self.s_price) < self.size:
+            return None, None, None
 
-#         sma = RoundedDecimal(self.s_price.tail(self.sma_window).mean())
-#         stdev = RoundedDecimal(self.s_price.tail(self.sma_window).astype(np.float64).std())
-#         lower_band = sma - (stdev * self.stdev_size)
-#         upper_band = sma + (stdev * self.stdev_size)
+        sma = Decimal(self.s_price.tail(self.size).mean())
+        stdev = Decimal(self.s_price.tail(self.size).astype(np.float64).std())
+        lower_band = sma - (stdev * self.stdev_size)
+        upper_band = sma + (stdev * self.stdev_size)
 
-#         self.s_sma[open_time] = sma
-#         self.s_stdev[open_time] = stdev
-#         self.s_lower_band[open_time] = lower_band
-#         self.s_upper_band[open_time] = upper_band
+        self.s_sma[open_time] = sma
+        self.s_stdev[open_time] = stdev
+        self.s_lower_band[open_time] = lower_band
+        self.s_upper_band[open_time] = upper_band
 
-#         return lower_band, sma, upper_band
+        return lower_band, sma, upper_band
 
 
 # class BollingerBandsEMA(Indicator):
@@ -448,7 +447,7 @@ class HalfTrend:
 #         return ema_bull_signal, ema_bear_signal
 
 
-# class StohasticOscillator(Indicator):
+# # class StohasticOscillator(Indicator):
 
-#     def __init__(self):
-#         ...
+# #     def __init__(self):
+# #         ...

@@ -2,7 +2,7 @@
 
 *Quantitative trading made simple*
 
-This is a set of tools for researching and deploying trading strategies in a uniform and efficient way.
+This is a toolkit for researching and deploying trading strategies in a uniform and efficient way.
 
 #### Local development
 
@@ -11,12 +11,11 @@ Set up a local environment
 python3 -m venv venv
 source venv/bin/activate
 poetry install -D
-git config core.hooksPath .githooks
 ```
 
-Install necessary packages for Jupyter Lab
+Install git-hooks
 ```
-* jupyter labextension install jupyterlab-plotly && jupyter lab build
+git config core.hooksPath .githooks
 ```
 
 Set up dependant local serivices

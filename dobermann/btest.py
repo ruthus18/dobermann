@@ -2,20 +2,20 @@ import datetime as dt
 import enum
 import logging
 import typing as tp
+import pytz
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from decimal import Decimal
 from functools import cached_property
 from statistics import geometric_mean
 
+import altair as alt
 import pandas as pd
-import plotly.graph_objects as go
 from tqdm.asyncio import tqdm
 
-from .config import settings
-
-from . import graphs
 from .binance_client import BinanceClient, Candle, Timeframe
+from .charts import get_equity_chart
+from .config import settings
 from .utils import OptDecimal, RoundedDecimal
 
 logger = logging.getLogger(__name__)
@@ -24,6 +24,9 @@ BINANCE_FUTURES_LIMIT_COMISSION = Decimal('0.0002')
 BINANCE_FUTURES_MARKET_COMISSION = Decimal('0.0004')
 
 EQUITY_INITIAL_AMOUNT = Decimal(1000)
+
+
+TZ = pytz.timezone(settings.TZ_NAME)
 
 
 class PositionType(str, enum.Enum):
@@ -204,7 +207,7 @@ class AccountReport:
         _equities = pd.Series(dtype=object)
         current_eq = EQUITY_INITIAL_AMOUNT
 
-        initial_time = self._start_at.astimezone(settings.TIMEZONE)
+        initial_time = self._start_at.astimezone(TZ)
         _equities[initial_time] = current_eq
 
         for position in self._positions:
@@ -214,10 +217,16 @@ class AccountReport:
         return _equities
 
     @cached_property
-    def equity_graph(self) -> go.Figure:
-        return graphs.get_report_graph(
-            go.Scatter(x=self.equities.index, y=self.equities.values, name='Equity', line=dict(color='#7658e0'))
+    def equity_graph(self) -> alt.LayerChart:
+        chart_df = (
+            pd.DataFrame({
+                'Equity': self.equities.astype('float64'),
+            })
+            .reset_index()
+            .fillna(method='ffill')
+            .rename(columns={'index': 'Time'})
         )
+        return get_equity_chart(chart_df)
 
     @cached_property
     def summary(self):

@@ -25,7 +25,6 @@ class Settings(BaseSettings):
     )
 
     TZ_NAME: str = 'Asia/Yekaterinburg'
-    TIMEZONE: tp.Any = pytz.timezone(TZ_NAME)
 
     BINANCE_KEY: SecretStr = SecretStr('')
     BINANCE_SECRET: SecretStr = SecretStr('')
