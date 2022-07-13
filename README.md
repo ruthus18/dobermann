@@ -4,6 +4,8 @@
 
 This is a toolkit for researching and deploying trading strategies in a uniform and efficient way.
 
+__AT NOW IS IN EARLY WIP__
+
 #### Local development
 
 Set up a local environment
