@@ -179,8 +179,6 @@ class Strategy(ABC):
         """
         self.exchange = exchange
 
-        # TODO: Прогрев индикаторов (пока можно делать на уровне дочернего класса стратегии)
-
     @abstractmethod
     def on_candle(self, candle: Candle) -> None: ...
 

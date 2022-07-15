@@ -682,6 +682,7 @@ class AccountReport:
             ),
             'avg_leverage_used': Decimal(round(self.leverage_used.mean(), 2)),
             'max_leverage_used': self.leverage_used.max(),
+            # sharpe ratio = np.sqrt(days in y) * np.mean(net_returns) / np.std(net_returns)
         }
 
 
