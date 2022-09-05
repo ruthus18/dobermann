@@ -1,10 +1,7 @@
-import datetime as dt
-import typing as tp
 import logging
 from decimal import Decimal
 from pathlib import Path
 
-import pytz
 from pydantic import BaseSettings, SecretStr
 
 
@@ -91,8 +88,6 @@ class Settings(BaseSettings):
             }
         },
     }
-
-    MEMORY_EFFICIENT: bool = True
 
     class Config:
         env_file = '.env'

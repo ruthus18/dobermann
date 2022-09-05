@@ -34,7 +34,7 @@ async def cursor(sql: str, *args) -> 'Cursor':
             yield cursor
 
 
-async def query(sql: str) -> tp.Sequence[tp.Dict[tp.Any, tp.Any]]:
+async def query(sql: str) -> tp.Sequence[dict]:
     conn = Tortoise.get_connection("default")
     _, result = await conn.execute_query(sql)
 
