@@ -1,3 +1,4 @@
+from abc import ABC, abstractmethod
 import datetime as dt
 import logging
 import math
@@ -7,100 +8,91 @@ from decimal import Decimal
 import numpy as np
 import pandas as pd
 
-from .config import settings
 from .types import Candle
 
 logger = logging.getLogger(__name__)
 
+"""
+TODO
+    * Индикаторы должны потреблять как можно меньше памяти!
+      Если кто-то хочет записать резльутат индикатора - пусть делает это извне
+"""
 
-# True for live purposes, False for research
-MEMORY_EFFICIENT = settings.MEMORY_EFFICIENT
+
+class Indicator(ABC):
+
+    @abstractmethod
+    def calculate(self, value: float) -> float: ...
 
 
-class SMA:
+class SMA(Indicator):
     """Simple Moving Average"""
 
     def __init__(self, size: int):
         self.size = size
+        self._values: list[float] = []
 
-        self.s_values = pd.Series(dtype='float64')
-        self.s = pd.Series(dtype='float64')
+    def calculate(self, value: float) -> float | None:
+        self._values.append(value)
 
-    def calculate(self, time: dt.datetime, value: float) -> float | None:
-        self.s_values[time] = value
-
-        if len(self.s_values) < self.size:
+        if len(self._values) < self.size:
             return None
 
-        current_sma = np.average(self.s_values.tail(self.size))
-        self.s[time] = current_sma
+        sma = sum(self._values) / self.size
+        self._values = self._values[1:]
 
-        if MEMORY_EFFICIENT:
-            self.s_values = self.s_values.tail(self.size - 1)
-            self.s = self.s.tail(0)
-
-        return current_sma
+        return sma
 
 
-class WMA:
+class EMA(Indicator):
+    """Exponential Moving Average"""
+
+    def __init__(self, size: int):
+        self.size = size
+        self.multiplier = round(2 / (self.size + 1), 4)
+    
+        self._values: list[float] = []
+        self._last_ema: float = None
+
+    def calculate(self, value: float) -> float | None:
+        if self._last_ema:
+            ema = (value * self.multiplier) + (self._last_ema * (1 - self.multiplier))
+        else:
+            self._values.append(value)
+            if len(self._values) < self.size:
+                return None
+
+            ema = sum(self._values) / self.size
+
+        self._last_ema = ema
+        return ema
+
+
+# TODO: Сделать версию с NumPy и сравнить производительность
+class WMA(Indicator):
     """Weighted Moving Average"""
 
     def __init__(self, size: int):
         self.size = size
 
-        self.s_values = pd.Series(dtype='float64')
-        self.s = pd.Series(dtype='float64')
-
+        self._values: list[float] = []
         self.weights = np.arange(1, size + 1)
 
-    def calculate(self, time: dt.datetime, value: float) -> float | None:
-        self.s_values[time] = value
+    def calculate(self, value: float) -> float | None:
+        self._values.append(value)
 
-        if len(self.s_values) < self.size:
+        if len(self._values) < self.size:
             return None
 
-        current_wma = np.average(self.s_values.tail(self.size), weights=self.weights)
-        self.s[time] = current_wma
+        elif len(self._values) > self.size:
+            self._values.pop(0)
 
-        if MEMORY_EFFICIENT:
-            self.s_values = self.s_values.tail(self.size - 1)
-            self.s = self.s.tail(0)
-
+        current_wma = np.average(self._values, weights=self.weights)
         return current_wma
 
 
-class EMA:
-    """Exponential Moving Average"""
-
-    def __init__(self, size: int):
-        self.size = size
-
-        self.s_values = pd.Series(dtype='float64')
-        self.s = pd.Series(dtype='float64')
-
-        self.multiplier = round(2 / (self.size + 1), 4)
-
-    def calculate(self, time: dt.datetime, value: float) -> float | None:
-        self.s_values[time] = value
-
-        if len(self.s_values) < self.size:
-            return None
-
-        elif len(self.s) == 0:
-            current_ema = np.average(self.s_values.tail(self.size))
-        else:
-            current_ema = (value * self.multiplier) + (self.s[-1] * (1 - self.multiplier))
-
-        self.s[time] = current_ema
-
-        if MEMORY_EFFICIENT:
-            self.s_values = self.s_values.tail(0)
-            self.s = self.s.tail(1)
-
-        return current_ema
-
-
-class HMA:
+# FIXME: DEPRECATED
+class __HMA:
     """Hull Moving Average"""
 
     def __init__(self, size: int):
@@ -137,7 +129,8 @@ class HMA:
         return current_hma
 
 
-class ATR:
+# FIXME: DEPRECATED
+class __ATR:
     """Average True Range"""
     def __init__(self, size: int):
         self.size = size
@@ -173,7 +166,8 @@ TREND_UP = 1
 TREND_DOWN = -1
 
 
-class HalfTrend:
+# FIXME: DEPRECATED
+class __HalfTrend:
     """HalfTrend indicator
     
     PineScript Implementation: https://tradingview.com/script/U1SJ8ubc-HalfTrend/
@@ -247,7 +241,8 @@ class HalfTrend:
         return None
 
 
-class BollingerBands:
+# FIXME: Deprecated
+class __BollingerBands:
 
     def __init__(self, size: int = 20, stdev_size: int = 2):
         self.size = size
@@ -280,6 +275,7 @@ class BollingerBands:
         return lower_band, sma, upper_band
 
 
+# FIXME: Deprecated
 # class BollingerBandsEMA(Indicator):
 
 #     def __init__(self, ema_size: int = 20, stdev_size: int = 2):
@@ -316,6 +312,7 @@ class BollingerBands:
 #         return lower_band, ema, upper_band
 
 
+# FIXME: Deprecated
 # class MACD(Indicator):
 
 #     def __init__(self, long_ema_size: int = 26, short_ema_size: int = 12, signal_ema_size: int = 9):
@@ -357,6 +354,7 @@ class BollingerBands:
 #         return signal_value, histogram_value
 
 
+# FIXME: Deprecated
 # class EMACross(Indicator):
 
 #     class Signal(enum.IntEnum):
@@ -405,6 +403,7 @@ class BollingerBands:
 #         return signal
 
 
+# FIXME: Deprecated
 # class LowHighEMA(Indicator):
 
 #     def __init__(self, ema_size: int = 20, bear_bull_size: int = 50):
@@ -447,6 +446,7 @@ class BollingerBands:
 #         return ema_bull_signal, ema_bear_signal
 
 
+# FIXME: Deprecated
 # # class StohasticOscillator(Indicator):
 
 # #     def __init__(self):
