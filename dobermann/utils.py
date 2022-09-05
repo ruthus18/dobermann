@@ -1,8 +1,10 @@
 import asyncio
 import enum
 import itertools
+import time
 import typing as tp
-from contextlib import suppress
+from collections import UserDict
+from contextlib import contextmanager, suppress
 from decimal import Decimal
 
 import msgpack
@@ -58,3 +60,12 @@ def packb_candle(candle: 'asyncpg.Record') -> bytes:
 
 def unpackb_candle(data: bytes) -> dict:
     return msgpack.unpackb(data, timestamp=3)
+
+
+class PerformanceStats(UserDict):
+    
+    @contextmanager
+    def measure(self, name: str):
+        start = time.time()
+        yield
+        self[name] = round(time.time() - start, 4)

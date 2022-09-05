@@ -25,7 +25,7 @@ from . import charts, db, utils
 from .binance_client import Timeframe
 from .config import settings
 from .types import Candle
-from .utils import RoundedDecimal
+from .utils import RoundedDecimal, PerformanceStats
 
 logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')  # TODO: Затянуть либу loguru
@@ -48,6 +48,9 @@ WORKERS_RESPONDER_URL = _ZMQ_URL.format(port=22225)
 
 EVENT_ALL_CANDLES_SENT = b'-1'
 EVENT_ALL_ORDERS_SENT = b'-2'
+
+
+perf = PerformanceStats()
 
 
 class StrategyExecutionError(Exception): ...
@@ -149,7 +152,7 @@ class CandlesFeed:
 
         self.timeframe = timeframe
         self.tickers = tickers
-        self._assets: dict[Ticker, AssetID] = None
+        self._assets: dict[AssetID, Ticker] = None
 
         self.log = logger.getChild('feed')
 
@@ -161,6 +164,7 @@ class CandlesFeed:
 
         self._total_candles_sent = 0
 
+    @perf.measure('feed.get_assets')
     async def get_assets(self) -> dict[AssetID, Ticker]:
         if self._assets:
             return self._assets
@@ -183,7 +187,7 @@ class CandlesFeed:
         self.log.debug('Loading assets...')
         async with db.cursor(query, *args) as cursor:
             assets = await cursor.fetch(10 ** 4)
-
+  
         self._assets = dict(assets)
         self.log.debug('Assets loaded: total=%s', len(assets))
 
@@ -193,6 +197,7 @@ class CandlesFeed:
         assets = await self.get_assets()
         return set(assets.values())
 
+    @perf.measure('feed.send_candles')
     async def send_candles(self):
         assets = await self.get_assets()
         query = '''
@@ -236,7 +241,6 @@ class CandlesFeed:
         self.log.debug('Candles feed started')
 
         with suppress(asyncio.CancelledError):
-            await self.register_candle_recipients()
             await self.send_candles()
 
         self.log.debug('Candles feed stopped')
@@ -698,32 +702,31 @@ async def backtest(
     logger.info('Backtesting started')
     await db.connect()
 
-    _perf_start = time.time()
+    with perf.measure('total'):
+        feed = CandlesFeed(start_at, end_at, timeframe, tickers)
+        actual_tickers = await feed.get_actual_tickers()
 
-    feed = CandlesFeed(start_at, end_at, timeframe, tickers)
-    actual_tickers = await feed.get_actual_tickers()
+        exchange = Exchange(position_size=position_size)
+        t_exchange = asyncio.create_task(exchange.process_orders())
 
-    exchange = Exchange(position_size=position_size)
-    t_exchange = asyncio.create_task(exchange.process_orders())
+        manager = WorkManager(actual_tickers, strategy)
+        try:
+            await manager.start_workers()
+            await feed.send_candles()
+            await manager.wait_workers_complete()
+            await exchange.complete()
 
-    manager = WorkManager(actual_tickers, strategy)
-    try:
-        await manager.start_workers()
-        await feed.send_candles()
-        await manager.wait_workers_complete()
-        await exchange.complete()
+            await asyncio.wait([t_exchange])
 
-        await asyncio.wait([t_exchange])
+        finally:
+            await manager.shutdown_workers()
 
-    finally:
-        await manager.shutdown_workers()
-
-    exchange.close()
-    manager.close()
-    feed.close()
+        exchange.close()
+        manager.close()
+        feed.close()
 
     await db.close()
-    logger.info('Backtesting complete! Total time: %.2fs', time.time() - _perf_start)
+    logger.info('Backtesting complete! Total time: %.2fs', perf['total'])
 
     return AccountReport(positions=exchange.positions, trading_start_at=start_at)
 
