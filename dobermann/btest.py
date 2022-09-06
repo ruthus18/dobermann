@@ -2,7 +2,6 @@ import datetime as dt
 import enum
 import logging
 import typing as tp
-import pytz
 from abc import ABC, abstractmethod
 from dataclasses import asdict, dataclass
 from decimal import Decimal
@@ -11,6 +10,7 @@ from statistics import geometric_mean
 
 import altair as alt
 import pandas as pd
+import pytz
 from tqdm.asyncio import tqdm
 
 from .binance_client import BinanceClient, Candle, Timeframe
