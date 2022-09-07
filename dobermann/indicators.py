@@ -1,22 +1,10 @@
 from abc import ABC, abstractmethod
-import datetime as dt
 import logging
-import math
-import typing as tp
-from decimal import Decimal
 
 import numpy as np
-import pandas as pd
 
-from .types import Candle
 
 logger = logging.getLogger(__name__)
-
-"""
-TODO
-    * Индикаторы должны потреблять как можно меньше памяти!
-      Если кто-то хочет записать резльутат индикатора - пусть делает это извне
-"""
 
 
 class Indicator(ABC):
@@ -50,7 +38,7 @@ class EMA(Indicator):
     def __init__(self, size: int):
         self.size = size
         self.multiplier = round(2 / (self.size + 1), 4)
-    
+
         self._values: list[float] = []
         self._last_ema: float = None
 
@@ -68,7 +56,6 @@ class EMA(Indicator):
         return ema
 
 
-# TODO: Сделать версию с NumPy и сравнить производительность
 class WMA(Indicator):
     """Weighted Moving Average"""
 
@@ -92,187 +79,187 @@ class WMA(Indicator):
 
 
 # FIXME: DEPRECATED
-class __HMA:
-    """Hull Moving Average"""
+# class __HMA:
+#     """Hull Moving Average"""
 
-    def __init__(self, size: int):
-        self.size_long = size
-        self.size_short = round(size / 2)
-        self.size_smooth = round(math.sqrt(size))
+#     def __init__(self, size: int):
+#         self.size_long = size
+#         self.size_short = round(size / 2)
+#         self.size_smooth = round(math.sqrt(size))
 
-        self.s_values = pd.Series(dtype='float64')
-        self.s_raw = pd.Series(dtype='float64')
-        self.s = pd.Series(dtype='float64')
+#         self.s_values = pd.Series(dtype='float64')
+#         self.s_raw = pd.Series(dtype='float64')
+#         self.s = pd.Series(dtype='float64')
 
-        self.weights_long = np.arange(1, self.size_long + 1)
-        self.weights_short = np.arange(1, self.size_short + 1)
-        self.weights_smooth = np.arange(1, self.size_smooth + 1)
+#         self.weights_long = np.arange(1, self.size_long + 1)
+#         self.weights_short = np.arange(1, self.size_short + 1)
+#         self.weights_smooth = np.arange(1, self.size_smooth + 1)
 
-    def calculate(self, time: dt.datetime, value: float) -> float | None:
-        self.s_values[time] = value
+#     def calculate(self, time: dt.datetime, value: float) -> float | None:
+#         self.s_values[time] = value
 
-        if len(self.s_values) < self.size_long:
-            return None
+#         if len(self.s_values) < self.size_long:
+#             return None
 
-        wma_long = np.average(self.s_values.tail(self.size_long), weights=self.weights_long)
-        wma_short = np.average(self.s_values.tail(self.size_short), weights=self.weights_short)
+#         wma_long = np.average(self.s_values.tail(self.size_long), weights=self.weights_long)
+#         wma_short = np.average(self.s_values.tail(self.size_short), weights=self.weights_short)
 
-        raw_hma = (2 * wma_short) - wma_long
-        self.s_raw[time] = raw_hma
+#         raw_hma = (2 * wma_short) - wma_long
+#         self.s_raw[time] = raw_hma
 
-        if len(self.s_raw) < self.size_smooth:
-            return None
+#         if len(self.s_raw) < self.size_smooth:
+#             return None
 
-        current_hma = np.average(self.s_raw.tail(self.size_smooth), weights=self.weights_smooth)
-        self.s[time] = current_hma
+#         current_hma = np.average(self.s_raw.tail(self.size_smooth), weights=self.weights_smooth)
+#         self.s[time] = current_hma
 
-        return current_hma
+#         return current_hma
+
+
+# # FIXME: DEPRECATED
+# class __ATR:
+#     """Average True Range"""
+#     def __init__(self, size: int):
+#         self.size = size
+
+#         self.prev_candle: dict = None
+#         self.s_true_range = pd.Series(dtype='float64')
+#         self.s = pd.Series(dtype='float64')
+
+#     def calculate(self, candle: Candle) -> float | None:
+#         if not self.prev_candle:
+#             self.prev_candle = candle
+#             return None
+
+#         true_range = float(max(
+#             (candle.high - candle.low),
+#             abs(candle.high - self.prev_candle.close),
+#             abs(candle.low - self.prev_candle.close)
+#         ))
+#         self.prev_candle = candle
+
+#         self.s_true_range[candle.open_time] = true_range
+
+#         if len(self.s_true_range) < self.size:
+#             return None
+
+#         current_atr = np.average(self.s_true_range.tail(self.size))
+#         self.s[candle.open_time] = current_atr
+
+#         return current_atr
+
+
+# TREND_UP = 1
+# TREND_DOWN = -1
 
 
 # FIXME: DEPRECATED
-class __ATR:
-    """Average True Range"""
-    def __init__(self, size: int):
-        self.size = size
+# class __HalfTrend:
+#     """HalfTrend indicator
 
-        self.prev_candle: dict = None
-        self.s_true_range = pd.Series(dtype='float64')
-        self.s = pd.Series(dtype='float64')
+#     PineScript Implementation: https://tradingview.com/script/U1SJ8ubc-HalfTrend/
+#     """
+#     def __init__(self, amplitude: int = 2, channel_deviation: int = 2):
+#         self.amplitude = amplitude
+#         self.channel_deviation = channel_deviation
 
-    def calculate(self, candle: Candle) -> float | None:
-        if not self.prev_candle:
-            self.prev_candle = candle
-            return None
+#         self.atr = ATR(100)
+#         self.prev_candle: dict = None
+#         self.trend = TREND_UP
 
-        true_range = float(max(
-            (candle.high - candle.low),
-            abs(candle.high - self.prev_candle.close),
-            abs(candle.low - self.prev_candle.close)
-        ))
-        self.prev_candle = candle
+#         # Uptrend data
+#         self.high_sma = SMA(size=self.amplitude)
+#         self.max_low_price = float('-inf')
 
-        self.s_true_range[candle.open_time] = true_range
+#         # Downtrend data
+#         self.low_sma = SMA(size=self.amplitude)
+#         self.min_high_price = float('inf')
 
-        if len(self.s_true_range) < self.size:
-            return None
+#         self.s = pd.Series(dtype='int')
 
-        current_atr = np.average(self.s_true_range.tail(self.size))
-        self.s[candle.open_time] = current_atr
+#     def calculate(self, candle: Candle) -> tp.Tuple[float | None, float | None, float | None, float | None]:
+#         signal = self._calculate(candle)
 
-        return current_atr
+#         if not MEMORY_EFFICIENT:
+#             if signal is None:
+#                 self.s[candle.open_time] = 0
+#             else:
+#                 self.s[candle.open_time] = signal
 
+#         self.prev_candle = candle
+#         return signal
 
-TREND_UP = 1
-TREND_DOWN = -1
+#     def _calculate(self, candle: Candle) -> tp.Tuple[float | None, float | None, float | None, float | None]:
+#         time = candle.open_time
 
+#         current_low_sma = self.low_sma.calculate(time, candle.low)
+#         current_high_sma = self.high_sma.calculate(time, candle.high)
 
-# FIXME: DEPRECATED
-class __HalfTrend:
-    """HalfTrend indicator
-    
-    PineScript Implementation: https://tradingview.com/script/U1SJ8ubc-HalfTrend/
-    """
-    def __init__(self, amplitude: int = 2, channel_deviation: int = 2):
-        self.amplitude = amplitude
-        self.channel_deviation = channel_deviation
+#         if not current_low_sma:
+#             return None
 
-        self.atr = ATR(100)
-        self.prev_candle: dict = None
-        self.trend = TREND_UP
+#         # TODO: Нужно разобраться, для чего нужны эти условия вместо candle['high'/'low']
+#         local_high = max(candle.high, self.prev_candle.high)
+#         local_low = min(candle.low, self.prev_candle.low)
 
-        # Uptrend data
-        self.high_sma = SMA(size=self.amplitude)
-        self.max_low_price = float('-inf')
+#         if self.trend == TREND_UP:
+#             self.max_low_price = max(self.max_low_price, local_low)
 
-        # Downtrend data
-        self.low_sma = SMA(size=self.amplitude)
-        self.min_high_price = float('inf')
+#             # Check whether uptrend is end
+#             if (current_high_sma < self.max_low_price) and (candle.close < self.prev_candle.low):
+#                 self.trend = TREND_DOWN
+#                 self.min_high_price = local_high
 
-        self.s = pd.Series(dtype='int')
+#                 return TREND_DOWN
 
-    def calculate(self, candle: Candle) -> tp.Tuple[float | None, float | None, float | None, float | None]:
-        signal = self._calculate(candle)
+#         elif self.trend == TREND_DOWN:
+#             self.min_high_price = min(self.min_high_price, local_high)
 
-        if not MEMORY_EFFICIENT:
-            if signal is None:
-                self.s[candle.open_time] = 0
-            else:
-                self.s[candle.open_time] = signal
+#             # Check whether downtrend is end
+#             if (current_low_sma > self.min_high_price) and (candle.close > self.prev_candle.high):
+#                 self.trend = TREND_UP
+#                 self.max_low_price = local_low
 
-        self.prev_candle = candle
-        return signal
+#                 return TREND_UP
 
-    def _calculate(self, candle: Candle) -> tp.Tuple[float | None, float | None, float | None, float | None]:
-        time = candle.open_time
+#         else:
+#             raise RuntimeError()
 
-        current_low_sma = self.low_sma.calculate(time, candle.low)
-        current_high_sma = self.high_sma.calculate(time, candle.high)
-
-        if not current_low_sma:
-            return None
-
-        # TODO: Нужно разобраться, для чего нужны эти условия вместо candle['high'/'low']
-        local_high = max(candle.high, self.prev_candle.high)
-        local_low = min(candle.low, self.prev_candle.low)
-
-        if self.trend == TREND_UP:
-            self.max_low_price = max(self.max_low_price, local_low)
-
-            # Check whether uptrend is end
-            if (current_high_sma < self.max_low_price) and (candle.close < self.prev_candle.low):
-                self.trend = TREND_DOWN
-                self.min_high_price = local_high
-
-                return TREND_DOWN
-
-        elif self.trend == TREND_DOWN:
-            self.min_high_price = min(self.min_high_price, local_high)
-
-            # Check whether downtrend is end
-            if (current_low_sma > self.min_high_price) and (candle.close > self.prev_candle.high):
-                self.trend = TREND_UP
-                self.max_low_price = local_low
-
-                return TREND_UP
-
-        else:
-            raise RuntimeError()
-
-        return None
+#         return None
 
 
 # FIXME: Deprecated
-class __BollingerBands:
+# class __BollingerBands:
 
-    def __init__(self, size: int = 20, stdev_size: int = 2):
-        self.size = size
-        self.stdev_size = stdev_size
+#     def __init__(self, size: int = 20, stdev_size: int = 2):
+#         self.size = size
+#         self.stdev_size = stdev_size
 
-        self.s_price = pd.Series(dtype=object)
+#         self.s_price = pd.Series(dtype=object)
 
-        self.s_sma = pd.Series(dtype=object)
-        self.s_stdev = pd.Series(dtype=object)
-        self.s_lower_band = pd.Series(dtype=object)
-        self.s_upper_band = pd.Series(dtype=object)
+#         self.s_sma = pd.Series(dtype=object)
+#         self.s_stdev = pd.Series(dtype=object)
+#         self.s_lower_band = pd.Series(dtype=object)
+#         self.s_upper_band = pd.Series(dtype=object)
 
-    def calculate(self, candle: Candle) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
-        open_time = candle.open_time
-        self.s_price[open_time] = candle.close
+#     def calculate(self, candle: Candle) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+#         open_time = candle.open_time
+#         self.s_price[open_time] = candle.close
 
-        if len(self.s_price) < self.size:
-            return None, None, None
+#         if len(self.s_price) < self.size:
+#             return None, None, None
 
-        sma = Decimal(self.s_price.tail(self.size).mean())
-        stdev = Decimal(self.s_price.tail(self.size).astype(np.float64).std())
-        lower_band = sma - (stdev * self.stdev_size)
-        upper_band = sma + (stdev * self.stdev_size)
+#         sma = Decimal(self.s_price.tail(self.size).mean())
+#         stdev = Decimal(self.s_price.tail(self.size).astype(np.float64).std())
+#         lower_band = sma - (stdev * self.stdev_size)
+#         upper_band = sma + (stdev * self.stdev_size)
 
-        self.s_sma[open_time] = sma
-        self.s_stdev[open_time] = stdev
-        self.s_lower_band[open_time] = lower_band
-        self.s_upper_band[open_time] = upper_band
+#         self.s_sma[open_time] = sma
+#         self.s_stdev[open_time] = stdev
+#         self.s_lower_band[open_time] = lower_band
+#         self.s_upper_band[open_time] = upper_band
 
-        return lower_band, sma, upper_band
+#         return lower_band, sma, upper_band
 
 
 # FIXME: Deprecated
@@ -413,7 +400,7 @@ class __BollingerBands:
 #         self.ema_low_price = EMA(size=2)
 #         self.ema_high_price = EMA(size=2)
 
-#         # self.bear_bull_size = bear_bull_size  
+#         # self.bear_bull_size = bear_bull_size
 
 #         self.s_ema_bull_signal = pd.Series(dtype=np.float64)
 #         self.s_ema_bear_signal = pd.Series(dtype=np.float64)

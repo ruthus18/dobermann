@@ -1,12 +1,22 @@
 ## Changelog
 
----
+
+### 0.2.0 Alpha (...)
+
+* Separate core objects from other modules
+
+* Switch to ByBit instead of Binance.
+
+* Experiments with MongoDB.
+
+* Drafts of `Strategy Lab` module.
+
 
 ### 0.1.0 Alpha (13.07.2022)
 
 _Init versioning. At now project is in early WIP. Architecture of core logic is unstable and actively improving during further research. Use this project as a collection of drafts for good qunatitative trading system rather than ready-to-use modules._
 
-List of features:
+__List of features:__
 
 * Scalable event-based backtesting (__simple__ for single-asset tests and __advanced__ for multi-asset tests). Simple backtester use online data from Binance and run strategy in sync. Multi-asset backtester is written on multiprocessing and using ZeroMQ for inter-communication; data loaded from DB (need to sync first via command `poe sync`). 
 

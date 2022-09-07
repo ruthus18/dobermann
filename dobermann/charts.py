@@ -96,7 +96,7 @@ def get_leverage_chart(df: pd.DataFrame, hover_selection: alt.Selection | None =
     """
     if not hover_selection:
         hover_selection = get_hover_selection()
-        
+
     leverage_min_y_scale = 0
     leverage_max_y_scale = (math.ceil(df['Leverage Used'].max()) + 0.5)
 
@@ -149,7 +149,7 @@ def get_drawdown_chart(df: pd.DataFrame, hover_selection: alt.Selection | None =
     """
     if not hover_selection:
         hover_selection = get_hover_selection()
-        
+
     drawdown_line = (
         alt.Chart(df)
         .mark_line(color='red')

@@ -231,7 +231,7 @@ class CandlesFeed:
                         ))
 
                         self._total_candles_sent += 1
-            
+
             logger.debug('Preparing candles time: %.2fs', time.time() - _perf_start)
 
         await self.candles_sender.send(EVENT_ALL_CANDLES_SENT)

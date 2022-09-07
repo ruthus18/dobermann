@@ -2,12 +2,11 @@ version: '3.8'
 
 services:
   db:
-    image: timescale/timescaledb:latest-pg14
+    image: mongo:5.0
     ports:
-      - 5432:5432
+      - 27017:27017
     environment:
-      POSTGRES_DB: 'dobermann'
-      POSTGRES_USER: 'dobermann'
-      POSTGRES_PASSWORD: 'dobermann'
+      - MONGO_INITDB_ROOT_USERNAME=dobermann
+      - MONGO_INITDB_ROOT_PASSWORD=dobermann
     volumes:
-      - ~/DobermannVolume/timescaledb-data:/var/lib/postgresql/data
+      - ~/dobermann-storage/mongo:/data/db
