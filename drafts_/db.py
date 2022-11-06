@@ -1,5 +1,6 @@
-from contextlib import asynccontextmanager
 import typing as tp
+from contextlib import asynccontextmanager
+
 from tortoise import Tortoise
 from tortoise.connection import connections
 

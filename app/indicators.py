@@ -10,7 +10,7 @@ class Indicator(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def reset(self):
+    def reset(self) -> None:
         raise NotImplementedError
 
 

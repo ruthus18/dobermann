@@ -2,7 +2,6 @@ import datetime as dt
 import json
 import typing as tp
 from enum import Enum
-import typing as tp
 
 from tortoise import fields, models
 from tortoise.queryset import QuerySet

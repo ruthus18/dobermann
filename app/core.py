@@ -1,25 +1,18 @@
-import enum
 import datetime as dt
-from functools import cached_property
-import typing as tp
+import enum
+import typing as t
 from decimal import Decimal
-
-
-class StrEnum(str, enum.Enum):
-    def __str__(self):
-        return self.value
-
 
 Asset = str
 
 
-class Timeframe(StrEnum):
+class Timeframe(enum.StrEnum):
     M5 = '5m'
     H1 = '1h'
     H4 = '4h'
     D1 = '1d'
 
-    @cached_property
+    @property
     def timedelta(self) -> dt.timedelta:
         return {
             self.M5: dt.timedelta(minutes=5),
@@ -29,7 +22,7 @@ class Timeframe(StrEnum):
         }[self.value]
 
 
-class Candle(tp.TypedDict):
+class Candle(t.TypedDict):
     open_time: dt.datetime
     open: float
     close: float
@@ -38,17 +31,17 @@ class Candle(tp.TypedDict):
     volume: float
 
 
-class TradeAction(StrEnum):
+class TradeAction(enum.StrEnum):
     OPEN = 'open'
     CLOSE = 'close'
 
 
-class TradeDirection(StrEnum):
+class TradeDirection(enum.StrEnum):
     BULL = 'bull'
     BEAR = 'bear'
 
 
-class TradeEvent(tp.TypedDict):
+class TradeEvent(t.TypedDict):
     # general for open/close event
     trade_id: int
     action: TradeAction

@@ -1,6 +1,7 @@
+import math
+
 import altair as alt
 import pandas as pd
-import math
 
 
 def get_extended_equity_chart(df: pd.DataFrame) -> alt.VConcatChart:

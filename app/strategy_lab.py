@@ -1,11 +1,10 @@
 # flake8: noqa
 import datetime as dt
-import typing as tp
-from abc import ABC
 
 import numpy as np
 
-from .core import Asset, Candle, Timeframe, TradeEvent
+from .core import Candle, Timeframe, TradeEvent
+from .db import get_candles
 from .indicators import Indicator
 
 # Constraints:
@@ -13,12 +12,7 @@ from .indicators import Indicator
 #    * start_at, end_at = const
 
 
-async def get_candles(
-    asset: Asset, timeframe: Timeframe, start_at: dt.datetime, end_at: dt.datetime
-) -> list[Candle]:
-    ...
-
-
+# Core part of backtester
 def generate_signals(candles: list[Candle], indicator: Indicator) -> np.ndarray:
     indicator.reset()
 
@@ -41,8 +35,8 @@ def account_report(trades: list[TradeEvent]) -> ...:
     ...
 
 
-async def showcase():
-    asset = 'BTCUSDT'
+async def showcase() -> None:
+    asset = 'BTCUSD'
     timeframe = Timeframe.M5
     start_at = dt.datetime(2022, 1, 1)
     end_at = dt.datetime(2022, 7, 1)

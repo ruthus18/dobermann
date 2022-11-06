@@ -6,7 +6,6 @@ import pytz
 from .binance_client import Timeframe
 from .config import settings
 
-
 TZ = pytz.timezone(settings.TZ_NAME)
 
 

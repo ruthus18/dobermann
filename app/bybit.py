@@ -1,15 +1,15 @@
 import asyncio
 import datetime as dt
+import typing as t
 from functools import partial
 
 import httpx
-from yarl import URL
 from tqdm.asyncio import tqdm
+from yarl import URL
 
 from .config import logger
 from .core import Asset, Candle, Timeframe
-from .utils import remove_candle_time_duplicates
-
+from .utils import remove_candle_tiem_duplicates
 
 TESTNET_URL = 'https://api-testnet.bybit.com'
 MAINNET_URL = 'https://api.bybit.com'
@@ -27,10 +27,10 @@ TIMEFRAME_MAP = {
 
 
 class APIError(Exception):
-    def __init__(self, code: str, message: str, *, request_params: dict = {}):
+    def __init__(self, code: str, message: str, *, request_params: dict | None = None):
         self.code = code
         self.messgae = message
-        self.request_params = request_params
+        self.request_params = request_params or {}
 
     def __str__(self) -> str:
         s = f'[{self.code}] {self.messgae}'
@@ -41,24 +41,24 @@ class APIError(Exception):
 
 
 class BybitClient:
-    def __init__(self, base_url: str = MAINNET_URL):
+    def __init__(self, base_url: str = MAINNET_URL) -> t.Self:
         self.base_url = URL(base_url)
         self._client = httpx.AsyncClient()
 
-    async def connect(self):
+    async def connect(self) -> None:
         await self._client.__aenter__()
 
-    async def __aenter__(self):
+    async def __aenter__(self) -> t.Self:
         await self.connect()
         return self
 
-    async def close(self):
+    async def close(self) -> None:
         await self._client.__aexit__()
 
-    async def __aexit__(self, *_):
+    async def __aexit__(self, *_) -> None:
         await self.close()
 
-    async def request(self, method, path, params: dict | None = None):
+    async def request(self, method: str, path: str, params: dict | None = None) -> httpx.Response:
         url = str(self.base_url / path)
 
         response = await self._client.request(method, url, params=params)
@@ -70,11 +70,11 @@ class BybitClient:
 
         return response
 
-    def _handle_errors(self, response_data: dict, params: dict = {}):
+    def _handle_errors(self, response_data: dict, params: dict | None = None) -> None:
         error_code = response_data['ret_code']
         error_msg = response_data['ret_msg']
 
-        raise APIError(error_code, error_msg, request_params=params)
+        raise APIError(error_code, error_msg, request_params=params or {})
 
     async def get_server_time(self) -> float:
         """Get actual server time (in timestamp format)
@@ -128,7 +128,7 @@ class BybitClient:
         timeframe: Timeframe,
         start_at: dt.datetime,
         end_at: dt.datetime,
-    ):
+    ) -> list[Candle]:
         """Get historical candles which `open_time` within interval [start_at; end_at)
 
         Run `MAX_WORKERS` num of workers which make concurrent requests
@@ -221,7 +221,7 @@ class BybitClient:
             worker.cancel()
 
         pbar.close()
-        remove_candle_time_duplicates(candles)
+        remove_candle_tiem_duplicates(candles)
 
         logger.success('Downloaded {} candles for {}[{}]', len(candles), asset, timeframe)
         return candles

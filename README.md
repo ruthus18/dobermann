@@ -2,9 +2,11 @@
 
 *Quantitative trading made simple*
 
+__AT NOW IS IN EARLY WIP__
+
 This is a toolkit for researching and deploying trading strategies in a uniform and efficient way.
 
-__AT NOW IS IN EARLY WIP__
+**Usage:** check out `examples` folder.
 
 #### Local development
 
@@ -27,6 +29,7 @@ docker-compose up -d
 
 Code linting
 ```bash
+poe pretty
 poe lint
 ```
 

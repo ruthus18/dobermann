@@ -1,15 +1,17 @@
 ## Changelog
 
 
-### 0.2.0 Alpha (...)
+### 0.2.0 Alpha (06.11.2022)
 
-* Separate core objects from other modules
+Move to new project structure. Decide to clean up project and separate core functionality from experiments. Now old version lives in `drafts_` folder. New version lives in `app` folder.
+
+Other updates:
 
 * Switch to ByBit instead of Binance.
 
-* Experiments with MongoDB.
-
 * Drafts of `Strategy Lab` module.
+
+* Add example of basic working with candles data and indicators.
 
 
 ### 0.1.0 Alpha (13.07.2022)

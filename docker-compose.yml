@@ -2,11 +2,12 @@ version: '3.8'
 
 services:
   db:
-    image: mongo:5.0
+    image: postgres:15
     ports:
-      - 27017:27017
+      - 5432:5432
     environment:
-      - MONGO_INITDB_ROOT_USERNAME=dobermann
-      - MONGO_INITDB_ROOT_PASSWORD=dobermann
+      POSTGRES_DB: 'dobermann'
+      POSTGRES_USER: 'dobermann'
+      POSTGRES_PASSWORD: 'dobermann'
     volumes:
-      - ~/dobermann-storage/mongo:/data/db
+      - ~/dobermann-volume:/var/lib/postgresql/data

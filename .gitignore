@@ -13,9 +13,9 @@ __pycache__/
 
 /*.ipynb
 
-research
-dobermann/data
-
 node_modules/
 dist/
 .parcel-cache/
+
+research
+app/sandbox

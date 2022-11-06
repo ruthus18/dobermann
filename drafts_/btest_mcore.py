@@ -2,7 +2,6 @@ import asyncio
 import datetime as dt
 import enum
 import logging.config
-import pytz
 import time
 import typing as tp
 import uuid
@@ -17,6 +16,7 @@ from statistics import geometric_mean
 
 import altair as alt
 import pandas as pd
+import pytz
 import simplejson as json
 import zmq
 from zmq.asyncio import Context, Poller
@@ -25,7 +25,7 @@ from . import charts, db, utils
 from .binance_client import Timeframe
 from .config import settings
 from .types import Candle
-from .utils import RoundedDecimal, PerformanceStats
+from .utils import PerformanceStats, RoundedDecimal
 
 logging.config.dictConfig(settings.LOGGING)
 logger = logging.getLogger('core')  # TODO: Затянуть либу loguru

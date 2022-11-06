@@ -8,7 +8,7 @@ def check_candle_time_duplicates(candles: list[Candle]) -> list[int]:
     """
     items_to_pop = []
     for i in range(len(candles) - 1):
-        if candles[i]['open_time'] == candles[i+1]['open_time']:
+        if candles[i]['open_time'] == candles[i + 1]['open_time']:
             items_to_pop.append(i)
 
     return items_to_pop

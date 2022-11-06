@@ -1,11 +1,11 @@
 import asyncio
 import datetime as dt
-import pytz
 import decimal
 import logging
 import typing as tp
 from decimal import Decimal
 
+import pytz
 from binance import AsyncClient, BinanceSocketManager
 from binance.enums import HistoricalKlinesType
 from pydantic import BaseModel, Field, validator

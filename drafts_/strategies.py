@@ -1,5 +1,6 @@
-from .btest_mcore import Strategy, Candle
-from .indicators import SMA, HMA, HalfTrend, TREND_UP, TREND_DOWN
+from .btest_mcore import Candle, Strategy
+from .indicators import HMA, SMA, TREND_DOWN, TREND_UP, HalfTrend
+
 
 class FalseSignalStrategy(Strategy):
     
