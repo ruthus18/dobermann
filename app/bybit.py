@@ -8,7 +8,6 @@ from yarl import URL
 
 from .config import logger
 from .core import Asset, Candle, Timeframe
-from .utils import remove_candle_tiem_duplicates
 
 TESTNET_URL = 'https://api-testnet.bybit.com'
 MAINNET_URL = 'https://api.bybit.com'
@@ -220,10 +219,32 @@ class BybitClient:
             worker.cancel()
 
         pbar.close()
-        remove_candle_tiem_duplicates(candles)
+        _remove_candle_tiem_duplicates(candles)
 
         logger.success('Downloaded {} candles for {}[{}]', len(candles), asset, timeframe)
         return candles
+
+
+def _check_candle_time_duplicates(candles: list[Candle]) -> list[int]:
+    """Check duplicated `open_time` param in candle list.
+
+    Should be executed on sorted list of candles
+    """
+    items_to_pop = []
+    for i in range(len(candles) - 1):
+        if candles[i]['open_time'] == candles[i + 1]['open_time']:
+            items_to_pop.append(i)
+
+    return items_to_pop
+
+
+def _remove_candle_tiem_duplicates(candles: list[Candle]) -> None:
+    items_to_pop = _check_candle_time_duplicates(candles)
+
+    offset = 0
+    for idx in items_to_pop:
+        candles.pop(idx - offset)
+        offset += 1
 
 
 client = BybitClient()

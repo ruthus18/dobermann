@@ -84,7 +84,7 @@ def get_equity_chart(df: pd.DataFrame, hover_selection: alt.Selection | None = N
     return alt.layer(
         equity_line, equity_start_line, equity_hover_selectors, equity_hover_rule, equity_hover_points
     ).properties(
-        title='Equity', width=1000, height=300
+        title='Equity', width=1200, height=250
     )
 
 
@@ -137,7 +137,7 @@ def get_leverage_chart(df: pd.DataFrame, hover_selection: alt.Selection | None =
     return alt.layer(
         leverage_hist, leverage_hover_selectors, leverage_hover_rule
     ).properties(
-        title='Leverage Used', width=1000, height=150
+        title='Leverage Used', width=1200, height=150
     )
 
 
@@ -184,25 +184,5 @@ def get_drawdown_chart(df: pd.DataFrame, hover_selection: alt.Selection | None =
     return alt.layer(
         drawdown_line, drawdown_hover_selectors, drawdown_hover_rule, drawdown_hover_points
     ).properties(
-        title='Drawdown', width=1000, height=100
+        title='Drawdown', width=1200, height=100
     )
-
-
-def get_candles_chart(df: pd.DataFrame) -> alt.LayerChart:
-    open_close_color = alt.condition(
-        'datum.open <= datum.close', alt.value('#06982d'), alt.value('#ae1325')
-    )
-    base = alt.Chart(df).encode(alt.X('open_time:T'), color=open_close_color)
-    rule = base.mark_rule().encode(
-        alt.Y(
-            'low:Q',
-            title='Price',
-            scale=alt.Scale(zero=False),
-        ),
-        alt.Y2('high:Q')
-    )
-    bar = base.mark_bar().encode(
-        alt.Y('open:Q'),
-        alt.Y2('close:Q')
-    )
-    return (rule + bar).properties(width=1200, height=700).interactive()

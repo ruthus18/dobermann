@@ -17,7 +17,7 @@ class Color:
     pastel_light_green = '#bde7bd'
 
 
-def candles_chart(candles: list[Candle], *, width: int = 1300, height: int = 500) -> alt.LayerChart:
+def candles_chart(candles: list[Candle], *, width: int = 1200, height: int = 300) -> alt.LayerChart:
     df = pd.DataFrame.from_dict(candles)
 
     open_close_color = alt.condition(
