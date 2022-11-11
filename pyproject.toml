@@ -20,7 +20,7 @@ loguru = "^0.6.0"
 yarl = "^1.8.1"
 asyncpg = "^0.27.0"
 
-[tool.poetry.dev-dependencies]
+[tool.poetry.group.dev.dependencies]
 pytest = "^7.1.1"
 flake8 = "^5.0.4"
 isort = "^5.10.1"
@@ -28,6 +28,13 @@ jupyterlab = "^3.2.6"
 ipdb = "^0.13.9"
 poethepoet = "^0.13.1"
 pytest-asyncio = "^0.18.3"
+jupyter-resource-usage = "^0.6.3"
+mypy = "^0.990"
+
+[build-system]
+requires = ["poetry-core>=1.3.0"]
+build-backend = "poetry.core.masonry.api"
+
 
 [tool.poe.tasks]
 _isort_pretty = "isort --overwrite-in-place ."
@@ -38,7 +45,3 @@ _flake8_lint = "flake8 --statistics --show-source ."
 lint = ["_isort_lint", "_flake8_lint"]
 
 lab = "jupyter lab"
-
-[build-system]
-requires = ["poetry-core>=1.3.0"]
-build-backend = "poetry.core.masonry.api"

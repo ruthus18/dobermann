@@ -1,6 +1,5 @@
 import asyncio
 import datetime as dt
-import typing as t
 from functools import partial
 
 import httpx
@@ -41,21 +40,21 @@ class APIError(Exception):
 
 
 class BybitClient:
-    def __init__(self, base_url: str = MAINNET_URL) -> t.Self:
+    def __init__(self, base_url: str = MAINNET_URL):
         self.base_url = URL(base_url)
         self._client = httpx.AsyncClient()
 
     async def connect(self) -> None:
         await self._client.__aenter__()
 
-    async def __aenter__(self) -> t.Self:
+    async def __aenter__(self) -> 'BybitClient':
         await self.connect()
         return self
 
     async def close(self) -> None:
         await self._client.__aexit__()
 
-    async def __aexit__(self, *_) -> None:
+    async def __aexit__(self, *_: list) -> None:
         await self.close()
 
     async def request(self, method: str, path: str, params: dict | None = None) -> httpx.Response:
@@ -157,21 +156,21 @@ class BybitClient:
         MAX_WORKERS = 12
         MAX_BATCH_SIZE = 200
 
-        tasks_q = asyncio.Queue()
+        tasks_q: asyncio.Queue = asyncio.Queue()
         responses_data = []
         candles = []
         current_open_time = minimum_open_time
 
         pbar = tqdm()
 
-        async def worker():
+        async def worker() -> None:
             while True:
                 time = await tasks_q.get()
                 response_data = await _request(time, MAX_BATCH_SIZE)
                 responses_data.append(response_data)
                 tasks_q.task_done()
 
-        async def consumer():
+        async def consumer() -> None:
             nonlocal responses_data
             nonlocal candles
             nonlocal current_open_time

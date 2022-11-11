@@ -115,10 +115,16 @@ async def get_candles(
     return candles
 
 
-# TODO: If candles exist in DB -> start sync from (max(open_time) + timeframe.timedelta)
+async def _get_last_candle_open_time(asset: Asset, timeframe: Timeframe) -> dt.datetime | None:
+    async with connect() as conn:
+        result = await conn.fetchrow(
+            "select max(open_time) from candles where asset = $1 and timeframe = $2;", asset, timeframe
+        )
+    return result[0]
+
+
 async def sync_candles_from_bybit() -> None:
     absolute_start_at = dt.datetime(2015, 1, 1)
-    absolute_end_at = dt.datetime.now()
 
     assets = bybit.TEST_ASSETS
     timeframes = (Timeframe.D1, Timeframe.H1, Timeframe.M5)
@@ -127,8 +133,14 @@ async def sync_candles_from_bybit() -> None:
 
     for asset in assets:
         for timeframe in timeframes:
+            if start_at := await _get_last_candle_open_time(asset, timeframe):
+                start_at += timeframe.timedelta
+            else:
+                start_at = absolute_start_at
 
-            candles = await bybit.client.get_candles(asset, timeframe, absolute_start_at, absolute_end_at)
+            end_at = dt.datetime.now()
+
+            candles = await bybit.client.get_candles(asset, timeframe, start_at, end_at)
             await insert_candles(candles, asset, timeframe)
 
     logger.info('Candles sync is done')

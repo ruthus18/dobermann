@@ -6,7 +6,7 @@ import numpy as np
 class Indicator(ABC):
 
     @abstractmethod
-    def calculate(self, value: float) -> float:
+    def calculate(self, value: float) -> float | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -35,7 +35,7 @@ class SMA(Indicator):
 
         return sma
 
-    def reset(self):
+    def reset(self) -> None:
         self._values = []
 
 
@@ -47,7 +47,7 @@ class EMA(Indicator):
         self.multiplier = round(2 / (self.size + 1), 4)
 
         self._values: list[float] = []
-        self._last_ema: float = None
+        self._last_ema: float | None = None
 
     def __str__(self) -> str:
         return f'EMA({self.size})'
@@ -65,7 +65,7 @@ class EMA(Indicator):
         self._last_ema = ema
         return ema
 
-    def reset(self):
+    def reset(self) -> None:
         self._values = []
         self._last_ema = None
 
@@ -92,7 +92,7 @@ class WMA(Indicator):
             self._values.pop(0)
 
         current_wma = np.average(self._values, weights=self.weights)
-        return current_wma
+        return current_wma  # type: ignore
 
-    def reset(self):
+    def reset(self) -> None:
         self._values = []

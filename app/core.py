@@ -44,10 +44,10 @@ class TradeDirection(enum.StrEnum):
 class TradeEvent(t.TypedDict):
     # general for open/close event
     trade_id: int
-    action: TradeAction
     direction: TradeDirection
     size: Decimal  # in $
 
     # differ for open/close event
     time: dt.datetime
-    price: Decimal
+    action: TradeAction
+    price: float
