@@ -4,6 +4,7 @@ import altair as alt
 import pandas as pd
 
 from .core import Candle, TradeDirection, TradeEvent
+from .strategy_lab import FeedItem
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 
@@ -38,6 +39,29 @@ def candles_chart(candles: list[Candle], *, width: int = 1200, height: int = 300
         alt.Y2('close:Q')
     )
     return (candle_shadows + candle_bodies).properties(width=width, height=height).interactive()
+
+
+def line_indicator_chart(
+    items: list[FeedItem], *, color: str = 'black', size: float = 1, opacity: float = 0.5
+) -> alt.LayerChart:
+    df = pd.DataFrame.from_dict(items)
+
+    return alt.Chart(df).mark_line(color=color, opacity=opacity, size=size).encode(x='time', y='value')
+
+
+def bin_indicator_chart(items: list[FeedItem]) -> alt.LayerChart:
+    df = pd.DataFrame.from_dict(items)
+
+    return (
+        alt.Chart(
+            df[df.value.notnull()]
+        )
+        .mark_rule(size=3, opacity=0.3)
+        .encode(
+            x='time',
+            color=alt.condition(alt.datum.value == True, alt.value('green'), alt.value('red'))  # noqa
+        )
+    )
 
 
 def trades_chart(trades: list[TradeEvent], *, label_size: int = 16) -> alt.LayerChart:

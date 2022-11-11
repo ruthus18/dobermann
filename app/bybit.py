@@ -215,8 +215,8 @@ class BybitClient:
         consumer_task = asyncio.create_task(consumer())
 
         await asyncio.wait([consumer_task])
-        for worker in workers:
-            worker.cancel()
+        for worker in workers:  # type: ignore
+            worker.cancel()  # type: ignore
 
         pbar.close()
         _remove_candle_tiem_duplicates(candles)

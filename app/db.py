@@ -110,7 +110,7 @@ async def get_candles(
             *(asset, timeframe, start_at, end_at)
         )
         while candles_batch := await cursor.fetch(1000):
-            candles += [Candle(record) for record in candles_batch]
+            candles += [Candle(record) for record in candles_batch]  # type: ignore
 
     return candles
 
@@ -120,7 +120,7 @@ async def _get_last_candle_open_time(asset: Asset, timeframe: Timeframe) -> dt.d
         result = await conn.fetchrow(
             "select max(open_time) from candles where asset = $1 and timeframe = $2;", asset, timeframe
         )
-    return result[0]
+    return result[0]  # type: ignore
 
 
 async def sync_candles_from_bybit() -> None:

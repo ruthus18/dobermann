@@ -42,6 +42,7 @@ pretty = ["_isort_pretty"]
 
 _isort_lint = "isort -c ."
 _flake8_lint = "flake8 --statistics --show-source ."
-lint = ["_isort_lint", "_flake8_lint"]
+_mypy_lint = "mypy ."
+lint = ["_isort_lint", "_flake8_lint", "_mypy_lint"]
 
 lab = "jupyter lab"
