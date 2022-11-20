@@ -103,9 +103,9 @@ class WMA(Indicator[float]):
 
 class MACross(Indicator[bool]):
     """
-    * EMA(short) cross EMA(long) bottom-up = True
-    * EMA(short) cross EMA(long) top-down  = False
-    * no cross or not enough data          = None
+    * MA(short) cross MA(long) bottom-up  = True
+    * MA(short) cross MA(long) top-down   = False
+    * MA no cross or not enough data      = None
     """
     def __init__(self, ma_short: SMA | EMA | WMA, ma_long: SMA | EMA | WMA):
         self.ma_short = ma_short

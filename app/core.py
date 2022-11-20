@@ -41,11 +41,14 @@ class TradeDirection(enum.StrEnum):
     BEAR = 'bear'
 
 
+TradeID = int
+
+
 class TradeEvent(t.TypedDict):
     # general for open/close event
-    trade_id: int
+    trade_id: TradeID
     direction: TradeDirection
-    size: Decimal  # in $
+    size: Decimal  # in % of equity
 
     # differ for open/close event
     time: dt.datetime

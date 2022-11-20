@@ -1,22 +1,103 @@
 import datetime as dt
-import typing as t
+from decimal import Decimal
 
-from .core import Candle
+from .account import AccountReport
+from .core import Candle, TradeAction, TradeDirection, TradeEvent
 from .indicators import _V, Indicator
 
 
-class FeedItem(t.TypedDict, t.Generic[_V]):
-    time: dt.datetime
-    value: _V
-
-
-def feed(candles: list[Candle], indicator: Indicator[_V]) -> list[FeedItem[_V | None]]:
-    out = [
-        FeedItem(
-            time=candle['open_time'],
-            value=indicator.calculate(candle['close']),
-        )
+def feed(candles: list[Candle], indicator: Indicator[_V]) -> dict[dt.datetime, _V | None]:
+    signals = {
+        candle['open_time']: indicator.calculate(candle['close'])
         for candle in candles
-    ]
+    }
     indicator.reset()
-    return out
+    return signals
+
+
+def backtest(
+    candles: list[Candle],
+    indicator: Indicator[bool],
+    *,
+    direction: TradeDirection | None = None,
+) -> AccountReport:
+    trade_events = _calculate_trade_events(candles, indicator)
+
+    if direction:
+        trade_events = [e for e in trade_events if e['direction'] == direction]
+
+    return AccountReport(trade_events, trading_start_at=candles[0]['open_time'])
+
+
+def _calculate_trade_events(candles: list[Candle], indicator: Indicator[bool]) -> list[TradeEvent]:
+    # Backtester would not work on indicators with duplicating values (e.g. (1, 0, 0, ...)), only switching 0 <-> 1
+    __id = 0
+
+    def get_id() -> int:
+        nonlocal __id
+        __id += 1
+        return __id
+
+    current_id = None
+    trade_events = []
+
+    for candle in candles:
+        value = indicator.calculate(candle['close'])
+
+        if value is True:
+            if current_id:
+                trade_events.append(
+                    TradeEvent(
+                        trade_id=current_id,
+                        direction=TradeDirection.BEAR,
+                        size=Decimal(1),
+                        time=candle['open_time'],
+                        action=TradeAction.CLOSE,
+                        price=candle['close'],
+                    )
+                )
+
+            current_id = get_id()
+            trade_events.append(
+                TradeEvent(
+                    trade_id=current_id,
+                    direction=TradeDirection.BULL,
+                    size=Decimal(1),
+                    time=candle['open_time'],  # IRL this is (open_time + timeframe.timedelta)
+                    action=TradeAction.OPEN,
+                    price=candle['close'],  # Also need to consider time lag (strategy latency, network latency)
+                                            # and round-trip transaction cost
+                )
+            )
+
+        elif value is False:
+            if current_id:
+                trade_events.append(
+                    TradeEvent(
+                        trade_id=current_id,
+                        direction=TradeDirection.BULL,
+                        size=Decimal(1),
+                        time=candle['open_time'],
+                        action=TradeAction.CLOSE,
+                        price=candle['close'],
+                    )
+                )
+
+            current_id = get_id()
+            trade_events.append(
+                TradeEvent(
+                    trade_id=current_id,
+                    direction=TradeDirection.BEAR,
+                    size=Decimal(1),
+                    time=candle['open_time'],
+                    action=TradeAction.OPEN,
+                    price=candle['close'],
+                )
+            )
+
+    indicator.reset()
+
+    if trade_events[-1]['action'] == TradeAction.OPEN:
+        trade_events.pop()
+
+    return trade_events
