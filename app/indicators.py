@@ -3,6 +3,8 @@ from abc import ABC, abstractmethod
 
 import numpy as np
 
+from .core import Candle, Timeframe
+
 _V = t.TypeVar('_V')
 
 
@@ -149,3 +151,37 @@ class MACross(Indicator[bool]):
 
         self.p_value_short = None
         self.p_value_long = None
+
+
+class TimeScale(Indicator[Candle]):
+
+    def __init__(self, in_scale: Timeframe, out_scale: Timeframe):
+        if out_scale.timedelta <= in_scale.timedelta:
+            raise ValueError('Output scale must be greather than input scale')
+
+        self.in_scale = in_scale
+        self.out_scale = out_scale
+
+        self.candles_mem: list[Candle] = []
+        self.scale_factor = int(self.out_scale.timedelta / self.in_scale.timedelta)
+
+    def calculate(self, value: Candle) -> Candle | None:
+        self.candles_mem.append(value)
+
+        if len(self.candles_mem) != self.scale_factor:
+            return None
+
+        scaled_candle = Candle(
+            open_time=self.candles_mem[0]['open_time'],
+            open=self.candles_mem[0]['open'],
+            close=self.candles_mem[-1]['close'],
+            low=min(c['low'] for c in self.candles_mem),
+            high=max(c['high'] for c in self.candles_mem),
+            volume=sum(c['volume'] for c in self.candles_mem),
+        )
+        self.candles_mem = []
+
+        return scaled_candle
+
+    def reset(self) -> None:
+        self.candles_mem = []
