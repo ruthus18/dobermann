@@ -14,11 +14,12 @@ TESTNET_URL = 'https://api-testnet.bybit.com'
 MAINNET_URL = 'https://api.bybit.com'
 
 
-TEST_ASSETS = ['BTCUSD', 'ETHUSD', 'BITUSD', 'XRPUSD', 'LTCUSD', 'SOLUSD']
+TEST_ASSETS = ['BTCUSDT', 'ETHUSDT', 'BNBUSDT', 'XRPUSDT', 'DOGEUSDT', 'SOLUSDT', 'LTCUSDT', 'ATOMUSDT']
 
 
 TIMEFRAME_MAP = {
     Timeframe.M5: '5',
+    Timeframe.M15: '15',
     Timeframe.H1: '60',
     Timeframe.H4: '240',
     Timeframe.D1: 'D',
@@ -156,7 +157,7 @@ class BybitClient:
         end_at: dt.datetime,
     ) -> list[Candle]:
         MAX_BATCH_SIZE = 200
-        MAX_TASKS = 45
+        MAX_TASKS = 20
 
         total_candles = math.ceil((end_at - start_at) / timeframe.timedelta)
         total_batches = math.ceil(total_candles / MAX_BATCH_SIZE)

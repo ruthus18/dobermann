@@ -127,7 +127,7 @@ async def sync_candles_from_bybit() -> None:
     absolute_start_at = dt.datetime(2015, 1, 1)
 
     assets = bybit.TEST_ASSETS
-    timeframes = (Timeframe.D1, Timeframe.H1, Timeframe.M5)
+    timeframes = (Timeframe.D1, Timeframe.H1, Timeframe.M15, Timeframe.M5)
 
     logger.info('Performing candles sync...')
 
@@ -141,6 +141,8 @@ async def sync_candles_from_bybit() -> None:
             end_at = dt.datetime.now()
 
             candles = await bybit.client.get_candles(asset, timeframe, start_at, end_at)
-            await insert_candles(candles, asset, timeframe)
+
+            # exclude last candle because it's incomplete (cause of passing `end_at` = `datetime.now()`)
+            await insert_candles(candles[:-1], asset, timeframe)
 
     logger.info('Candles sync is done')

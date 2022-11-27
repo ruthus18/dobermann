@@ -8,6 +8,7 @@ Asset = str
 
 class Timeframe(enum.StrEnum):
     M5 = '5m'
+    M15 = '15m'
     H1 = '1h'
     H4 = '4h'
     D1 = '1d'
@@ -16,6 +17,7 @@ class Timeframe(enum.StrEnum):
     def timedelta(self) -> dt.timedelta:
         return {
             self.M5: dt.timedelta(minutes=5),
+            self.M15: dt.timedelta(minutes=15),
             self.H1: dt.timedelta(hours=1),
             self.H4: dt.timedelta(hours=4),
             self.D1: dt.timedelta(days=1),
