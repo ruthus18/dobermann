@@ -1,6 +1,7 @@
 import asyncio
 import datetime as dt
-from functools import partial
+import itertools
+import math
 
 import httpx
 from tqdm.asyncio import tqdm
@@ -63,14 +64,14 @@ class BybitClient:
         response.raise_for_status()
 
         response_data = response.json()['result']
-        if response_data is None:
+        if not response_data:
             self._handle_errors(response.json(), params)
 
         return response
 
     def _handle_errors(self, response_data: dict, params: dict | None = None) -> None:
-        error_code = response_data['ret_code']
-        error_msg = response_data['ret_msg']
+        error_code = response_data['retCode']
+        error_msg = response_data['retMsg']
 
         raise APIError(error_code, error_msg, request_params=params or {})
 
@@ -91,160 +92,127 @@ class BybitClient:
         asset: Asset,
         timeframe: Timeframe,
         from_time: dt.datetime,
-        batch_size: int,
+        to_time: dt.datetime,
+        batch_size: int = 200,
     ) -> list[Candle]:
+        """Docs: https://bybit-exchange.github.io/docs/derivativesV3/unified_margin/#t-dv_querykline
+        """
         response = await self.request(
             'GET',
-            'v2/public/kline/list',
+            'derivatives/v3/public/kline',
             params={
                 'category': 'linear',
                 'symbol': asset,
                 'interval': TIMEFRAME_MAP[timeframe],
-                'from': int(from_time.timestamp()),
+                'start': int(from_time.timestamp() * 1000),
+                # -1 becuase we need to exclude candle which open_time == to_time arg
+                'end': int(to_time.timestamp() * 1000 - 1),
                 'limit': batch_size,
             }
         )
-        response_data = response.json()['result']
-        if response_data is None:
-            self._handle_errors(response.json())
-
-        return sorted([
+        candles_data = response.json()['result']['list']
+        return [
             Candle(
-                open_time=dt.datetime.fromtimestamp(candle_data['open_time']),
-                open=float(candle_data['open']),
-                close=float(candle_data['close']),
-                low=float(candle_data['low']),
-                high=float(candle_data['high']),
-                volume=float(candle_data['volume']),
+                open_time=dt.datetime.fromtimestamp(int(candle_data[0]) / 1000),
+                open=float(candle_data[1]),
+                high=float(candle_data[2]),
+                low=float(candle_data[3]),
+                close=float(candle_data[4]),
+                volume=float(candle_data[5]),
             )
-            for candle_data in response_data
-        ], key=lambda c: c['open_time'])
+            for candle_data in candles_data
+        ]
 
-    async def get_candles(  # noqa: C901
+    async def _get_candles_slow(
         self,
         asset: Asset,
         timeframe: Timeframe,
         start_at: dt.datetime,
         end_at: dt.datetime,
     ) -> list[Candle]:
-        """Get historical candles which `open_time` within interval [start_at; end_at)
+        MAX_BATCH_SIZE = 200
 
-        Run `MAX_WORKERS` num of workers which make concurrent requests
+        pbar = tqdm(total=math.ceil((end_at - start_at) / timeframe.timedelta))
+        start_at_ = start_at
+        candles = []
 
-        Docs: https://bybit-exchange.github.io/docs/derivativesV3/unified_margin/#t-dv_querykline
-        """
+        while start_at_ < end_at:
+            response_candles = await self._get_candles_batch(
+                asset, timeframe, start_at_, end_at, MAX_BATCH_SIZE
+            )
+            candles += response_candles
+
+            start_at_ += timeframe.timedelta * MAX_BATCH_SIZE
+            pbar.update(len(response_candles))
+
+        pbar.close()
+        return sorted(candles, key=lambda c: c['open_time'])
+
+    async def _get_candles_fast(
+        self,
+        asset: Asset,
+        timeframe: Timeframe,
+        start_at: dt.datetime,
+        end_at: dt.datetime,
+    ) -> list[Candle]:
+        MAX_BATCH_SIZE = 200
+        MAX_TASKS = 45
+
+        total_candles = math.ceil((end_at - start_at) / timeframe.timedelta)
+        total_batches = math.ceil(total_candles / MAX_BATCH_SIZE)
+
+        pbar = tqdm(total=total_candles)
+
+        start_at_coll = [
+            start_at + (timeframe.timedelta * MAX_BATCH_SIZE * i)
+            for i in range(total_batches)
+        ]
+        limiter = asyncio.Semaphore(MAX_TASKS)
+
+        async def fetch_task(start_at_: dt.datetime) -> list[Candle]:
+            async with limiter:
+                response_candles = await self._get_candles_batch(asset, timeframe, start_at_, end_at, MAX_BATCH_SIZE)
+                await asyncio.sleep(1)
+
+            pbar.update(len(response_candles))
+            return response_candles
+
+        tasks = [asyncio.create_task(fetch_task(start_at_)) for start_at_ in start_at_coll]
+        responses = await asyncio.gather(*tasks)
+        pbar.close()
+
+        return sorted(list(itertools.chain.from_iterable(responses)), key=lambda c: c['open_time'])
+
+    async def get_candles(
+        self,
+        asset: Asset,
+        timeframe: Timeframe,
+        start_at: dt.datetime,
+        end_at: dt.datetime,
+        *,
+        concurrent: bool = True,
+    ) -> list[Candle]:
         assert end_at > start_at
         logger.info('Downloading candles for <g>{}[{}]</g>...', asset, timeframe)
 
-        _request = partial(self._get_candles_batch, asset, timeframe)
-
         # Test request
-        response_data = await _request(start_at, batch_size=1)
-        if len(response_data) == 0:
-            # Cases when we call candles from future
+        response_candles = await self._get_candles_batch(asset, timeframe, start_at, end_at, batch_size=1)
+        if len(response_candles) == 0:
             logger.warning('No candles found for {}[{}]', asset, timeframe)
             return []
 
-        minimum_open_time = response_data[0]['open_time']
-        if minimum_open_time >= end_at:
-            # Cases when we call candles from past which is unknown
-            logger.warning('No candles found for {}[{}]', asset, timeframe)
-            return []
+        if response_candles[0]['open_time'] > start_at:
+            start_at = response_candles[0]['open_time']
 
-        # https://bybit-exchange.github.io/docs/futuresV2/inverse/#t-ipratelimits
-        MAX_WORKERS = 12
-        MAX_BATCH_SIZE = 200
+        if (now := dt.datetime.now()) < end_at:
+            end_at = now
 
-        tasks_q: asyncio.Queue = asyncio.Queue()
-        responses_data = []
-        candles = []
-        current_open_time = minimum_open_time
+        if concurrent:
+            coro = self._get_candles_fast
+        else:
+            coro = self._get_candles_slow
 
-        pbar = tqdm()
-
-        async def worker() -> None:
-            while True:
-                time = await tasks_q.get()
-                response_data = await _request(time, MAX_BATCH_SIZE)
-                responses_data.append(response_data)
-                tasks_q.task_done()
-
-        async def consumer() -> None:
-            nonlocal responses_data
-            nonlocal candles
-            nonlocal current_open_time
-            mark_exit = False
-
-            while not mark_exit:
-                time_batches = [
-                    current_open_time + (timeframe.timedelta * MAX_BATCH_SIZE * i)
-                    for i in range(MAX_WORKERS)
-                ]
-                for time in time_batches:
-                    tasks_q.put_nowait(time)
-
-                await tasks_q.join()
-
-                current_candles = []
-                for response_data in responses_data:
-                    if len(response_data) == 0:
-                        mark_exit = True
-
-                    current_candles += response_data
-
-                if len(current_candles) == 0:
-                    break
-
-                current_candles.sort(key=lambda c: c['open_time'])
-                max_open_time = current_candles[-1]['open_time']
-
-                if max_open_time > end_at:
-                    mark_exit = True
-                    current_candles = [c for c in current_candles if c['open_time'] < end_at]
-
-                candles += current_candles
-                pbar.update(len(current_candles))
-
-                responses_data = []
-                current_open_time = max_open_time + timeframe.timedelta
-
-                if current_open_time >= end_at:
-                    mark_exit = True
-
-        workers = [asyncio.create_task(worker()) for _ in range(MAX_WORKERS)]
-        consumer_task = asyncio.create_task(consumer())
-
-        await asyncio.wait([consumer_task])
-        for worker in workers:  # type: ignore
-            worker.cancel()  # type: ignore
-
-        pbar.close()
-        _remove_candle_tiem_duplicates(candles)
-
-        logger.success('Downloaded {} candles for {}[{}]', len(candles), asset, timeframe)
-        return candles
-
-
-def _check_candle_time_duplicates(candles: list[Candle]) -> list[int]:
-    """Check duplicated `open_time` param in candle list.
-
-    Should be executed on sorted list of candles
-    """
-    items_to_pop = []
-    for i in range(len(candles) - 1):
-        if candles[i]['open_time'] == candles[i + 1]['open_time']:
-            items_to_pop.append(i)
-
-    return items_to_pop
-
-
-def _remove_candle_tiem_duplicates(candles: list[Candle]) -> None:
-    items_to_pop = _check_candle_time_duplicates(candles)
-
-    offset = 0
-    for idx in items_to_pop:
-        candles.pop(idx - offset)
-        offset += 1
+        return await coro(asset, timeframe, start_at, end_at)
 
 
 client = BybitClient()

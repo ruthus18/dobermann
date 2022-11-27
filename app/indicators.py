@@ -153,6 +153,8 @@ class MACross(Indicator[bool]):
         self.p_value_long = None
 
 
+# FIXME: Абстракция потекла :(
+#        (`Candle` - более сложная структура данных нежели numeric/bool и плохо ложится на текущий инструмент)
 class TimeScale(Indicator[Candle]):
 
     def __init__(self, in_scale: Timeframe, out_scale: Timeframe):
