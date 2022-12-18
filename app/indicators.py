@@ -75,6 +75,64 @@ class EMA(Indicator[float]):
         self._last_ema = None
 
 
+class DEMA(Indicator[float]):
+
+    def __init__(self, size: int):
+        self.size = size
+        self.ema = EMA(size)
+        self.ema2 = EMA(size)  # smoothen EMA
+
+    def __str__(self) -> str:
+        return f'DEMA({self.size})'
+
+    def calculate(self, value: float) -> float | None:
+        ema_value = self.ema.calculate(value)
+        if ema_value is None:
+            return None
+
+        ema2_value = self.ema2.calculate(ema_value)
+        if ema2_value is None:
+            return None
+
+        return 2 * ema_value - ema2_value
+
+    def reset(self) -> None:
+        self.ema.reset()
+        self.ema2.reset()
+
+
+class TEMA(Indicator[float]):
+
+    def __init__(self, size: int):
+        self.size = size
+        self.ema = EMA(size)
+        self.ema2 = EMA(size)  # smoothen EMA
+        self.ema3 = EMA(size)  # doube-smoothen EMA
+
+    def __str__(self) -> str:
+        return f'TEMA({self.size})'
+
+    def calculate(self, value: float) -> float | None:
+        ema_value = self.ema.calculate(value)
+        if ema_value is None:
+            return None
+
+        ema2_value = self.ema2.calculate(ema_value)
+        if ema2_value is None:
+            return None
+
+        ema3_value = self.ema3.calculate(ema2_value)
+        if ema3_value is None:
+            return None
+
+        return 3 * ema_value - 3 * ema2_value + ema3_value
+
+    def reset(self) -> None:
+        self.ema.reset()
+        self.ema2.reset()
+        self.ema3.reset()
+
+
 class WMA(Indicator[float]):
     """Weighted Moving Average"""
 
@@ -103,13 +161,16 @@ class WMA(Indicator[float]):
         self._values = []
 
 
+MAType = SMA | EMA | DEMA | TEMA | WMA
+
+
 class MACross(Indicator[bool]):
     """
     * MA(short) cross MA(long) bottom-up  = True
     * MA(short) cross MA(long) top-down   = False
     * MA no cross or not enough data      = None
     """
-    def __init__(self, ma_short: SMA | EMA | WMA, ma_long: SMA | EMA | WMA):
+    def __init__(self, ma_short: MAType, ma_long: MAType):
         self.ma_short = ma_short
         self.ma_long = ma_long
 
