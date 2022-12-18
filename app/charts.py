@@ -1,4 +1,5 @@
 import datetime as dt
+import itertools
 import math
 import warnings
 from decimal import Decimal
@@ -10,18 +11,35 @@ from .core import Candle, TradeDirection, TradeEvent
 
 warnings.filterwarnings('ignore', category=FutureWarning)
 
+alt.data_transformers.disable_max_rows()
+
 
 PASTEL_RED = '#ff6962'
 PASTEL_GREEN = '#77dd76'
 
 
-def candles_chart(candles: list[Candle], *, width: int = 1200, height: int = 300) -> alt.LayerChart:
-    df = pd.DataFrame.from_dict(candles)
+def _get_candles_zoom_x_selection() -> alt.Selection:
+    return alt.selection_interval(bind='scales', encodings=['x'], zoom='wheel![event.shiftKey]')
+
+
+def _get_candles_zoom_y_selection() -> alt.Selection:
+    return alt.selection_interval(bind='scales', encodings=["y"], zoom='wheel![event.ctrlKey]')
+
+
+def candles_chart(
+    candles: list[Candle],
+    *,
+    width: int = 1200,
+    height: int = 400,
+    _zoom_x_selection: alt.Selection | None = None,
+    _zoom_y_selection: alt.Selection | None = None,
+) -> alt.LayerChart:
+    df = pd.DataFrame.from_dict(candles).rename(columns={'open_time': 'time'})
 
     open_close_color = alt.condition(
         'datum.open <= datum.close', alt.value(PASTEL_GREEN), alt.value(PASTEL_RED)
     )
-    base = alt.Chart(df).encode(alt.X('open_time:T'), color=open_close_color)
+    base = alt.Chart(df).encode(alt.X('time:T', axis=alt.Axis(title='', grid=False)), color=open_close_color)
 
     candle_shadows = base.mark_rule().encode(
         alt.Y(
@@ -35,7 +53,19 @@ def candles_chart(candles: list[Candle], *, width: int = 1200, height: int = 300
         alt.Y('open:Q'),
         alt.Y2('close:Q')
     )
-    return (candle_shadows + candle_bodies).properties(width=width, height=height).interactive()
+
+    if not _zoom_x_selection:
+        _zoom_x_selection = _get_candles_zoom_x_selection()
+
+    if not _zoom_y_selection:
+        _zoom_y_selection = _get_candles_zoom_y_selection()
+
+    return (
+        (candle_shadows + candle_bodies)
+        .properties(width=width, height=height)
+        .add_selection(_zoom_x_selection)
+        .add_selection(_zoom_y_selection)
+    )
 
 
 def line_indicator_chart(
@@ -83,13 +113,13 @@ def trades_chart(trades: list[TradeEvent], *, label_size: int = 16) -> alt.Layer
     return alt.Chart(df).mark_text().encode(x='time', y='price', text=text_cond, size=alt.value(label_size))
 
 
-def _get_hover_selection() -> alt.Selection:
+def _get_equity_hover_selection() -> alt.Selection:
     return alt.selection(type='single', nearest=True, on='mouseover', fields=['time'], empty='none')
 
 
 def equity_chart(
     equities: dict[dt.datetime, Decimal],
-    hover_selection: alt.Selection | None = None,
+    _hover_selection: alt.Selection | None = None,
 ) -> alt.LayerChart:
     df = pd.DataFrame({
         'time': equities.keys(),
@@ -100,8 +130,8 @@ def equity_chart(
     equity_min_y_scale = (math.floor(df['equity'].min() / 100) - 0.5) * 100
     equity_max_y_scale = (math.ceil(df['equity'].max() / 100) + 0.5) * 100
 
-    if not hover_selection:
-        hover_selection = _get_hover_selection()
+    if not _hover_selection:
+        _hover_selection = _get_equity_hover_selection()
 
     equity_line = (
         alt.Chart(df)
@@ -131,18 +161,18 @@ def equity_chart(
             alt.Tooltip('time', format='%d %b %Y, %H:%M'),
             alt.Tooltip('equity', format='.2f')
         ])
-        .add_selection(hover_selection)
+        .add_selection(_hover_selection)
     )
     equity_hover_points = (
         equity_line
         .mark_point(filled=True)
-        .encode(opacity=alt.condition(hover_selection, alt.value(1), alt.value(0)))
+        .encode(opacity=alt.condition(_hover_selection, alt.value(1), alt.value(0)))
     )
     equity_hover_rule = (
         alt.Chart(df)
         .mark_rule(opacity=0.25, size=0.25)
         .encode(x='time')
-        .transform_filter(hover_selection)
+        .transform_filter(_hover_selection)
     )
 
     return alt.layer(
@@ -154,7 +184,7 @@ def equity_chart(
 
 def leverage_chart(
     leverages: dict[dt.datetime, Decimal],
-    hover_selection: alt.Selection | None = None,
+    _hover_selection: alt.Selection | None = None,
 ) -> alt.LayerChart:
     df = pd.DataFrame({
         'time': leverages.keys(),
@@ -165,8 +195,8 @@ def leverage_chart(
     leverage_min_y_scale = 0
     leverage_max_y_scale = (math.ceil(df.leverage.max()) + 0.5)
 
-    if not hover_selection:
-        hover_selection = _get_hover_selection()
+    if not _hover_selection:
+        _hover_selection = _get_equity_hover_selection()
 
     leverage_hist = (
         alt.Chart(df)
@@ -182,7 +212,7 @@ def leverage_chart(
                 scale=alt.Scale(domain=[leverage_min_y_scale, leverage_max_y_scale])
             ),
             color=alt.value('darkgreen'),
-            opacity=alt.condition(hover_selection, alt.value(1), alt.value(0.5))
+            opacity=alt.condition(_hover_selection, alt.value(1), alt.value(0.5))
         )
     )
     leverage_hover_selectors = (
@@ -192,13 +222,13 @@ def leverage_chart(
             alt.Tooltip('time', format='%d %b %Y, %H:%M'),
             alt.Tooltip('leverage', format='.2f')
         ])
-        .add_selection(hover_selection)
+        .add_selection(_hover_selection)
     )
     leverage_hover_rule = (
         alt.Chart(df)
         .mark_rule(opacity=0.25, size=0.25)
         .encode(x='time')
-        .transform_filter(hover_selection)
+        .transform_filter(_hover_selection)
     )
 
     return alt.layer(
@@ -210,7 +240,7 @@ def leverage_chart(
 
 def drawdown_chart(
     drawdowns: dict[dt.datetime, Decimal],
-    hover_selection: alt.Selection | None = None,
+    _hover_selection: alt.Selection | None = None,
 ) -> alt.LayerChart:
     df = pd.DataFrame({
         'time': drawdowns.keys(),
@@ -218,8 +248,8 @@ def drawdown_chart(
     })
     df.drawdown = df.drawdown.astype('float')
 
-    if not hover_selection:
-        hover_selection = _get_hover_selection()
+    if not _hover_selection:
+        _hover_selection = _get_equity_hover_selection()
 
     drawdown_line = (
         alt.Chart(df)
@@ -237,18 +267,18 @@ def drawdown_chart(
             alt.Tooltip('time', format='%d %b %Y, %H:%M'),
             alt.Tooltip('drawdown', format='.6f')
         ])
-        .add_selection(hover_selection)
+        .add_selection(_hover_selection)
     )
     drawdown_hover_rule = (
         alt.Chart(df)
         .mark_rule(opacity=0.25, size=0.25)
         .encode(x='time')
-        .transform_filter(hover_selection)
+        .transform_filter(_hover_selection)
     )
     drawdown_hover_points = (
         drawdown_line
         .mark_point(filled=True, color='red')
-        .encode(opacity=alt.condition(hover_selection, alt.value(1), alt.value(0)))
+        .encode(opacity=alt.condition(_hover_selection, alt.value(1), alt.value(0)))
     )
 
     return alt.layer(
@@ -263,10 +293,85 @@ def equity_leverage_drawdown_chart(
     leverages: dict[dt.datetime, Decimal],
     drawdowns: dict[dt.datetime, Decimal],
 ) -> alt.VConcatChart:
-    hover_selection = _get_hover_selection()
+    hover_selection = _get_equity_hover_selection()
 
     equity_chart_ = equity_chart(equities, hover_selection)
     leverage_chart_ = leverage_chart(leverages, hover_selection)
     drawdown_chart_ = drawdown_chart(drawdowns, hover_selection)
 
-    return alt.vconcat(equity_chart_, leverage_chart_, drawdown_chart_)
+    return equity_chart_ & leverage_chart_ & drawdown_chart_
+
+
+class CandlesView:
+    """
+    Examples:
+        >>> candles = [Candle(...), Candle(...)]
+
+        1. Draw only candles
+
+        >>> CandlesView(candles).chart
+
+        2. Draw candles with overlayed indicator lines
+
+        >>> ema50_s = lab.feed(candles, indicators.EMA(50))
+        >>> view = CandlesView(candles, overlay={'EMA(50)': ema50_s})
+        >>> view.chart
+
+        You can also add overlayed indicators "on the fly"
+
+        >>> dema50_s = lab.feed(candles, indicators.DEMA(50))
+        >>> view.add_overlay_line(dema50_s, 'DEMA(50)')
+        >>> view.chart
+    """
+
+    def __init__(self, candles: list[Candle], *, overlay: dict[str, dict[dt.datetime, float]] | None = None):
+        self._candles_data = candles
+        self._overlay_data = overlay or {}
+
+        self.width = 1200
+        self.height = 400
+
+    def add_overlay_line(self, signals: dict[dt.datetime, float], name: str) -> None:
+        self._overlay_data[name] = signals
+
+    def _assert_overlay_timescales_consistency(self) -> None:
+        timescales = (sig.keys() for sig in self._overlay_data.values())
+
+        for T1, T2 in itertools.combinations(timescales, 2):
+            assert T1 == T2, 'Overlay timescales are not the same'
+
+    @property
+    def overlay_chart(self) -> alt.Chart | None:
+        if not self._overlay_data:
+            return None
+
+        self._assert_overlay_timescales_consistency()
+
+        _first_name = list(self._overlay_data.keys())[0]
+        chart_data = {
+            'time': self._overlay_data[_first_name].keys(),
+        }
+        chart_data.update({
+            name: signals.values()
+            for name, signals in self._overlay_data.items()
+        })
+
+        chart = (
+            alt.Chart(pd.DataFrame(chart_data))
+            .transform_fold(
+                [name for name in self._overlay_data.keys()],
+                as_=['signal', 'value']
+            )
+            .mark_line()
+            .encode(x='time:T', y='value:Q', color='signal:N')
+        )
+        return chart
+
+    @property
+    def chart(self) -> alt.Chart | alt.VConcatChart:
+        chart = candles_chart(self._candles_data)
+
+        if self.overlay_chart:
+            chart += self.overlay_chart
+
+        return chart
