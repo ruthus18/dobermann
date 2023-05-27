@@ -1,5 +1,10 @@
 ## Changelog
 
+### 0.4.0 Alpha (27.05.2023)
+
+* Compound charts (candlestick with bottom & overlay figures)
+
+_You can find usage example in `examples/02_visualization.ipynb`_
 
 ### 0.3.0 Alpha (18.12.2022)
 

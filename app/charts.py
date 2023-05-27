@@ -1,6 +1,7 @@
 import datetime as dt
 import itertools
 import math
+import typing as t
 import warnings
 from decimal import Decimal
 
@@ -33,6 +34,7 @@ def candles_chart(
     height: int = 400,
     _zoom_x_selection: alt.Selection | None = None,
     _zoom_y_selection: alt.Selection | None = None,
+    _hover_selection: alt.Selection | None = None,
 ) -> alt.LayerChart:
     df = pd.DataFrame.from_dict(candles).rename(columns={'open_time': 'time'})
 
@@ -54,6 +56,28 @@ def candles_chart(
         alt.Y2('close:Q')
     )
 
+    if not _hover_selection:
+        _hover_selection = _get_hover_selection()
+
+    hover_selectors = (
+        alt.Chart(df)
+        .mark_rule(size=10)
+        .encode(x='time', opacity=alt.value(0), tooltip=[
+            alt.Tooltip('time', format='%d %b %Y, %H:%M'),
+            alt.Tooltip('open', format='.2f'),
+            alt.Tooltip('low', format='.2f'),
+            alt.Tooltip('high', format='.2f'),
+            alt.Tooltip('close', format='.2f'),
+        ])
+        .add_selection(_hover_selection)
+    )
+    hover_rule = (
+        alt.Chart(df)
+        .mark_rule(opacity=0.25, size=0.25)
+        .encode(x='time')
+        .transform_filter(_hover_selection)
+    )
+
     if not _zoom_x_selection:
         _zoom_x_selection = _get_candles_zoom_x_selection()
 
@@ -61,7 +85,7 @@ def candles_chart(
         _zoom_y_selection = _get_candles_zoom_y_selection()
 
     return (
-        (candle_shadows + candle_bodies)
+        (candle_shadows + candle_bodies + hover_selectors + hover_rule)
         .properties(width=width, height=height)
         .add_selection(_zoom_x_selection)
         .add_selection(_zoom_y_selection)
@@ -113,7 +137,7 @@ def trades_chart(trades: list[TradeEvent], *, label_size: int = 16) -> alt.Layer
     return alt.Chart(df).mark_text().encode(x='time', y='price', text=text_cond, size=alt.value(label_size))
 
 
-def _get_equity_hover_selection() -> alt.Selection:
+def _get_hover_selection() -> alt.Selection:
     return alt.selection(type='single', nearest=True, on='mouseover', fields=['time'], empty='none')
 
 
@@ -131,7 +155,7 @@ def equity_chart(
     equity_max_y_scale = (math.ceil(df['equity'].max() / 100) + 0.5) * 100
 
     if not _hover_selection:
-        _hover_selection = _get_equity_hover_selection()
+        _hover_selection = _get_hover_selection()
 
     equity_line = (
         alt.Chart(df)
@@ -196,7 +220,7 @@ def leverage_chart(
     leverage_max_y_scale = (math.ceil(df.leverage.max()) + 0.5)
 
     if not _hover_selection:
-        _hover_selection = _get_equity_hover_selection()
+        _hover_selection = _get_hover_selection()
 
     leverage_hist = (
         alt.Chart(df)
@@ -249,7 +273,7 @@ def drawdown_chart(
     df.drawdown = df.drawdown.astype('float')
 
     if not _hover_selection:
-        _hover_selection = _get_equity_hover_selection()
+        _hover_selection = _get_hover_selection()
 
     drawdown_line = (
         alt.Chart(df)
@@ -293,7 +317,7 @@ def equity_leverage_drawdown_chart(
     leverages: dict[dt.datetime, Decimal],
     drawdowns: dict[dt.datetime, Decimal],
 ) -> alt.VConcatChart:
-    hover_selection = _get_equity_hover_selection()
+    hover_selection = _get_hover_selection()
 
     equity_chart_ = equity_chart(equities, hover_selection)
     leverage_chart_ = leverage_chart(leverages, hover_selection)
@@ -303,56 +327,41 @@ def equity_leverage_drawdown_chart(
 
 
 class CandlesView:
-    """
-    Examples:
-        >>> candles = [Candle(...), Candle(...)]
 
-        1. Draw only candles
-
-        >>> CandlesView(candles).chart
-
-        2. Draw candles with overlayed indicator lines
-
-        >>> ema50_s = lab.feed(candles, indicators.EMA(50))
-        >>> view = CandlesView(candles, overlay={'EMA(50)': ema50_s})
-        >>> view.chart
-
-        You can also add overlayed indicators "on the fly"
-
-        >>> dema50_s = lab.feed(candles, indicators.DEMA(50))
-        >>> view.add_overlay_line(dema50_s, 'DEMA(50)')
-        >>> view.chart
-    """
-
-    def __init__(self, candles: list[Candle], *, overlay: dict[str, dict[dt.datetime, float]] | None = None):
+    def __init__(self, candles: list[Candle]):
         self._candles_data = candles
-        self._overlay_data = overlay or {}
+        self._overlay_data: dict[str, dict[dt.datetime, float]] = {}
+        self._bottom_data: dict[str, dict[dt.datetime, float]] = {}
 
         self.width = 1200
         self.height = 400
+        self.bottom_height_scale_factor = 3
 
-    def add_overlay_line(self, signals: dict[dt.datetime, float], name: str) -> None:
+    def add_overlay_data(self, signals: dict[dt.datetime, float], name: str) -> None:
         self._overlay_data[name] = signals
 
-    def _assert_overlay_timescales_consistency(self) -> None:
-        timescales = (sig.keys() for sig in self._overlay_data.values())
+    def add_bottom_data(self, signals: dict[dt.datetime, float], name: str) -> None:
+        self._bottom_data[name] = signals
 
+    def _assert_time_series_consistency(self, timescales: t.Iterable[dt.datetime]) -> None:
         for T1, T2 in itertools.combinations(timescales, 2):
-            assert T1 == T2, 'Overlay timescales are not the same'
+            assert T1 == T2, 'Time series are not the same!'
 
-    @property
-    def overlay_chart(self) -> alt.Chart | None:
+    def get_overlay_chart(self) -> alt.Chart | None:
         if not self._overlay_data:
             return None
 
-        self._assert_overlay_timescales_consistency()
+        self._assert_time_series_consistency(sig.keys() for sig in self._overlay_data.values())  # type: ignore
 
+        # We need only one time series so we take first
+        # (it is not important which one, because we previously check that all time series are same)
         _first_name = list(self._overlay_data.keys())[0]
         chart_data = {
             'time': self._overlay_data[_first_name].keys(),
         }
+
         chart_data.update({
-            name: signals.values()
+            name: signals.values()  # type: ignore
             for name, signals in self._overlay_data.items()
         })
 
@@ -367,11 +376,83 @@ class CandlesView:
         )
         return chart
 
+    def get_bottom_chart(self, _hover_selection: alt.Selection | None = None) -> alt.Chart | None:
+        if not self._bottom_data:
+            return None
+
+        self._assert_time_series_consistency(sig.keys() for sig in self._bottom_data.values())  # type: ignore
+
+        # We need only one time series so we take first
+        # (it is not important which one, because we previously check that all time series are same)
+        _first_name = list(self._bottom_data.keys())[0]
+        chart_data = {
+            'time': self._bottom_data[_first_name].keys(),
+        }
+
+        chart_data.update({
+            name: signals.values()  # type: ignore
+            for name, signals in self._bottom_data.items()
+        })
+
+        df = pd.DataFrame(chart_data)
+        chart = (
+            alt.Chart(df)
+            .transform_fold(
+                [name for name in self._bottom_data.keys()],
+                as_=['signal', 'value']
+            )
+            .mark_line()
+            .encode(
+                x=alt.X('time:T', axis=alt.Axis(title='', grid=False)),
+                y=alt.Y('value:Q', scale=alt.Scale(zero=False)),
+                color='signal:N'
+            )
+            .properties(width=self.width, height=self.height // self.bottom_height_scale_factor)
+        )
+
+        if not _hover_selection:
+            _hover_selection = _get_hover_selection()
+
+        hover_selectors = (
+            alt.Chart(df)
+            .mark_rule(size=10)
+            .encode(x='time', opacity=alt.value(0), tooltip=[
+                alt.Tooltip('time', format='%d %b %Y, %H:%M'),
+                *[
+                    alt.Tooltip(name, format='.2f')
+                    for name in self._bottom_data.keys()
+                ]
+            ])
+            .encode(x='time', opacity=alt.value(0))
+            .add_selection(_hover_selection)
+        )
+        hover_rule = (
+            alt.Chart(df)
+            .mark_rule(opacity=0.25, size=0.25)
+            .encode(x='time')
+            .transform_filter(_hover_selection)
+        )
+
+        return chart + hover_selectors + hover_rule
+
     @property
     def chart(self) -> alt.Chart | alt.VConcatChart:
-        chart = candles_chart(self._candles_data)
+        zoom_x = _get_candles_zoom_x_selection()
+        zoom_y = _get_candles_zoom_y_selection()
+        hover_selection = _get_hover_selection()
 
-        if self.overlay_chart:
-            chart += self.overlay_chart
+        chart = candles_chart(self._candles_data, _zoom_x_selection=zoom_x, _hover_selection=hover_selection)
 
-        return chart
+        # Check data variable to avoid building charts twice (this is redundant)
+
+        if self._overlay_data:
+            chart += self.get_overlay_chart()
+
+        if self._bottom_data:
+            chart &= (
+                self.get_bottom_chart(_hover_selection=hover_selection)  # type: ignore
+                .add_selection(zoom_x)
+                .add_selection(zoom_y)
+            )
+
+        return chart.resolve_scale(color='independent')
