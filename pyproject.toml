@@ -24,11 +24,11 @@ asyncpg = "^0.27.0"
 pytest = "^7.3.1"
 flake8 = "^5.0.4"
 isort = "^5.12.0"
-jupyterlab = "^3.6.3"
+jupyterlab = "^4.0.0"
 ipdb = "^0.13.13"
 poethepoet = "^0.13.1"
 pytest-asyncio = "^0.18.3"
-jupyter-resource-usage = "^0.6.4"
+jupyter-resource-usage = "^0.7.2"
 mypy = "^0.990"
 
 [build-system]
