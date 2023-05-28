@@ -3,10 +3,10 @@ from decimal import Decimal
 
 from .account import AccountReport
 from .core import Candle, TradeAction, TradeDirection, TradeEvent
-from .indicators import _V, Indicator
+from .indicators import Indicator, _V_out
 
 
-def feed(candles: list[Candle], indicator: Indicator[_V]) -> dict[dt.datetime, _V | None]:
+def feed(candles: list[Candle], indicator: Indicator[float, _V_out]) -> dict[dt.datetime, _V_out | None]:
     signals = {
         candle['open_time']: indicator.calculate(candle['close'])
         for candle in candles
@@ -17,10 +17,14 @@ def feed(candles: list[Candle], indicator: Indicator[_V]) -> dict[dt.datetime, _
 
 def backtest(
     candles: list[Candle],
-    indicator: Indicator[bool],
+    indicator: Indicator[float, bool],
     *,
     direction: TradeDirection | None = None,
 ) -> AccountReport:
+    """Calculate trading statistics, based on series of candles, which feeded into boolean indicator
+
+    [WARNING] Indicator in this case serving as emitter of open-close order signals
+    """
     trade_events = _calculate_trade_events(candles, indicator)
 
     if direction:
@@ -29,7 +33,7 @@ def backtest(
     return AccountReport(trade_events, trading_start_at=candles[0]['open_time'])
 
 
-def _calculate_trade_events(candles: list[Candle], indicator: Indicator[bool]) -> list[TradeEvent]:
+def _calculate_trade_events(candles: list[Candle], indicator: Indicator[float, bool]) -> list[TradeEvent]:
     # Backtester would not work on indicators with duplicating values (e.g. (1, 0, 0, ...)), only switching 0 <-> 1
     __id = 0
 

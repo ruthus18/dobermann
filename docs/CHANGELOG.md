@@ -1,12 +1,12 @@
 ## Changelog
 
-### 0.4.0 Alpha (27.05.2023)
+### A 0.4.0 (27.05.2023)
 
 * Compound charts (candlestick with bottom & overlay figures)
 
 _You can find usage example in `examples/02_visualization.ipynb`_
 
-### 0.3.0 Alpha (18.12.2022)
+### A 0.3.0 (18.12.2022)
 
 * Strategy lab module:
     * Feeding indicators with data
@@ -22,7 +22,7 @@ _You can find usage example in `examples/02_visualization.ipynb`_
     * Example of combining indicators (double MA crossing)
     * Example of working with multiple timescales (`TimeScale` indicator)
 
-### 0.2.0 Alpha (06.11.2022)
+### A 0.2.0 (06.11.2022)
 
 Move to new project structure. Decide to clean up project and separate core functionality from experiments. Now old version lives in `drafts_` folder. New version lives in `app` folder.
 
@@ -35,7 +35,7 @@ Other updates:
 * Add example of basic working with candles data and indicators.
 
 
-### 0.1.0 Alpha (13.07.2022)
+### A 0.1.0 (13.07.2022)
 
 _Init versioning. At now project is in early WIP. Architecture of core logic is unstable and actively improving during further research. Use this project as a collection of drafts for good qunatitative trading system rather than ready-to-use modules._
 

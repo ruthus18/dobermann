@@ -5,13 +5,14 @@ import numpy as np
 
 from .core import Candle, Timeframe
 
-_V = t.TypeVar('_V')
+_V_in = t.TypeVar('_V_in')
+_V_out = t.TypeVar('_V_out')
 
 
-class Indicator(ABC, t.Generic[_V]):
+class Indicator(ABC, t.Generic[_V_in, _V_out]):
 
     @abstractmethod
-    def calculate(self, value: float) -> _V | None:
+    def calculate(self, value: _V_in) -> _V_out | None:
         raise NotImplementedError
 
     @abstractmethod
@@ -19,7 +20,7 @@ class Indicator(ABC, t.Generic[_V]):
         raise NotImplementedError
 
 
-class SMA(Indicator[float]):
+class SMA(Indicator[float, float]):
     """Simple Moving Average"""
 
     def __init__(self, size: int):
@@ -44,7 +45,7 @@ class SMA(Indicator[float]):
         self._values = []
 
 
-class EMA(Indicator[float]):
+class EMA(Indicator[float, float]):
     """Exponential Moving Average"""
 
     def __init__(self, size: int):
@@ -75,7 +76,7 @@ class EMA(Indicator[float]):
         self._last_ema = None
 
 
-class DEMA(Indicator[float]):
+class DEMA(Indicator[float, float]):
 
     def __init__(self, size: int):
         self.size = size
@@ -101,7 +102,7 @@ class DEMA(Indicator[float]):
         self.ema2.reset()
 
 
-class TEMA(Indicator[float]):
+class TEMA(Indicator[float, float]):
 
     def __init__(self, size: int):
         self.size = size
@@ -133,7 +134,7 @@ class TEMA(Indicator[float]):
         self.ema3.reset()
 
 
-class WMA(Indicator[float]):
+class WMA(Indicator[float, float]):
     """Weighted Moving Average"""
 
     def __init__(self, size: int):
@@ -164,7 +165,7 @@ class WMA(Indicator[float]):
 MAType = SMA | EMA | DEMA | TEMA | WMA
 
 
-class MACross(Indicator[bool]):
+class MACross(Indicator[float, bool]):
     """
     * MA(short) cross MA(long) bottom-up  = True
     * MA(short) cross MA(long) top-down   = False
@@ -214,9 +215,7 @@ class MACross(Indicator[bool]):
         self.p_value_long = None
 
 
-# FIXME: Абстракция потекла :(
-#        (`Candle` - более сложная структура данных нежели numeric/bool и плохо ложится на текущий инструмент)
-class TimeScale(Indicator[Candle]):
+class TimeScale(Indicator[Candle, Candle]):
 
     def __init__(self, in_scale: Timeframe, out_scale: Timeframe):
         if out_scale.timedelta <= in_scale.timedelta:

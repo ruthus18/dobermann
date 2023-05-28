@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "dobermann"
-version = "0.2.0"
+version = "0.4.0"
 description = "Tools for research and deploy trading strategies"
 authors = ["Danil Tryapchev <ruthus18@gmail.com>"]
 license = "MIT"
